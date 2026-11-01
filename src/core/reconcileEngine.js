@@ -7,8 +7,9 @@ import {
 
 const MS_PER_DAY = 86_400_000;
 const MAX_VARIANTS_PER_MULTISET = 3;
+const MAX_EXACT_DECIMALS = 6;
 const PROGRESS_INTERVAL_MS = 60;
-const NODE_CHECK_MASK = 2047; // Check clock & cancellation every 2048 nodes
+const NODE_CHECK_MASK = 2047; // Kiểm tra đồng hồ & cờ hủy mỗi 2048 nút
 
 /**
  * Chuẩn hóa chuỗi tiếng Việt để tìm kiếm không phân biệt hoa thường & dấu:
@@ -94,26 +95,102 @@ function getItemDayTimestamp(item) {
 }
 
 /**
- * Kiểm tra một số thực có phần thập phân đáng kể hay không.
+ * Đếm số chữ số thập phân hữu hiệu của một số thực JS dựa trên biểu diễn chuỗi ngắn nhất chuẩn ECMAScript.
  *
- * @param {number} x
- * @returns {boolean}
+ * @param {number} num
+ * @returns {number}
  */
-function hasDecimalFraction(x) {
-  return Math.abs(x - Math.round(x)) > 1e-6;
+function getDecimalDigitsCount(num) {
+  if (!Number.isFinite(num) || num === 0) return 0;
+  const raw = String(num).trim().toLowerCase();
+  let body = raw[0] === '-' || raw[0] === '+' ? raw.slice(1) : raw;
+  let exp = 0;
+  const eIdx = body.indexOf('e');
+  if (eIdx !== -1) {
+    exp = parseInt(body.slice(eIdx + 1), 10);
+    body = body.slice(0, eIdx);
+  }
+  const dotIdx = body.indexOf('.');
+  const fracLen = dotIdx === -1 ? 0 : body.length - dotIdx - 1;
+  return Math.max(0, fracLen - exp);
 }
 
 /**
- * Quy đổi ngược từ đơn vị nguyên (đã nhân scale) về số thực chuẩn xác.
+ * Chuyển đổi chính xác tuyệt đối số thực JS sang BigInt đã nhân 10^scaleDecimals bằng phân tích chuỗi chữ số:
+ * - Không bao giờ dùng phép nhân dấu phẩy động `num * 10^k` (tránh sai lệch IEEE-754 và tránh tràn MAX_SAFE_INTEGER).
+ * - Đối xứng dấu hoàn hảo (half-away-from-zero) nếu số chữ số lẻ vượt quá scaleDecimals.
  *
- * @param {number} intVal
- * @param {number} scale
+ * @param {number} num
+ * @param {number} scaleDecimals
+ * @returns {bigint}
+ */
+function numberToScaledBigInt(num, scaleDecimals) {
+  if (!Number.isFinite(num) || num === 0) return 0n;
+  const raw = String(num).trim().toLowerCase();
+  let sign = 1n;
+  let body = raw;
+  if (body.startsWith('-')) {
+    sign = -1n;
+    body = body.slice(1);
+  } else if (body.startsWith('+')) {
+    body = body.slice(1);
+  }
+
+  let mantissa = body;
+  let exp = 0;
+  const eIdx = body.indexOf('e');
+  if (eIdx !== -1) {
+    mantissa = body.slice(0, eIdx);
+    exp = parseInt(body.slice(eIdx + 1), 10);
+  }
+
+  const dotIdx = mantissa.indexOf('.');
+  const intStr = dotIdx === -1 ? mantissa : mantissa.slice(0, dotIdx);
+  const fracStr = dotIdx === -1 ? '' : mantissa.slice(dotIdx + 1);
+  const digits = (intStr + fracStr).replace(/^0+/, '') || '0';
+  if (digits === '0') return 0n;
+
+  const totalShift = exp - fracStr.length + scaleDecimals;
+  if (totalShift >= 0) {
+    return sign * BigInt(digits + '0'.repeat(totalShift));
+  }
+
+  const cut = -totalShift;
+  if (cut > digits.length) {
+    return 0n;
+  }
+  const head = digits.slice(0, digits.length - cut) || '0';
+  const nextDigit = Number(digits[digits.length - cut] || '0');
+  let val = BigInt(head);
+  if (nextDigit >= 5) val += 1n;
+  return val === 0n ? 0n : sign * val;
+}
+
+/**
+ * Quy đổi ngược từ BigInt đã nhân 10^scaleDecimals về số thực JS chuẩn xác, đảm bảo 0 luôn là +0.
+ *
+ * @param {bigint} bigVal
+ * @param {number} scaleDecimals
  * @returns {number}
  */
-function unscaleAmount(intVal, scale) {
-  if (scale === 1) return intVal === 0 ? 0 : intVal;
-  const val = Number((intVal / scale).toFixed(2));
-  return val === 0 ? 0 : val;
+function scaledBigIntToNumber(bigVal, scaleDecimals) {
+  if (bigVal === 0n) return 0;
+  const neg = bigVal < 0n;
+  const absStr = (neg ? -bigVal : bigVal).toString();
+  let outStr;
+  if (scaleDecimals === 0) {
+    outStr = absStr;
+  } else if (absStr.length <= scaleDecimals) {
+    const padded = absStr.padStart(scaleDecimals, '0').replace(/0+$/, '');
+    outStr = padded ? `0.${padded}` : '0';
+  } else {
+    const intPart = absStr.slice(0, absStr.length - scaleDecimals);
+    const fracPart = absStr.slice(absStr.length - scaleDecimals).replace(/0+$/, '');
+    outStr = fracPart ? `${intPart}.${fracPart}` : intPart;
+  }
+  if (outStr === '0') return 0;
+  const num = Number(neg ? `-${outStr}` : outStr);
+  return num === 0 ? 0 : num;
 }
 
 /**
@@ -129,42 +206,55 @@ function formatIntVN(n) {
 }
 
 /**
- * Định dạng số tiền VN phục vụ ghi chú dòng trùng mệnh giá.
+ * Định dạng mệnh giá BigInt đã scale sang chuỗi tiền tệ chuẩn VN phục vụ ghi chú dòng trùng mệnh giá.
  *
- * @param {number} value
+ * @param {bigint} bigVal
+ * @param {number} scaleDecimals
  * @returns {string}
  */
-function formatAmountVN(value) {
-  if (!Number.isFinite(value) || value === 0) return '0';
-  const sign = value < 0 ? '-' : '';
-  const abs = Math.abs(value);
-  const rounded = Math.round(abs * 100) / 100;
-  if (Math.abs(rounded - Math.round(rounded)) < 1e-9) {
-    return sign + String(Math.round(rounded)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+function formatScaledBigIntVN(bigVal, scaleDecimals) {
+  if (bigVal === 0n) return '0';
+  const sign = bigVal < 0n ? '-' : '';
+  const absStr = (bigVal < 0n ? -bigVal : bigVal).toString();
+
+  if (scaleDecimals === 0) {
+    return sign + absStr.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   }
-  const [intPart, decPart] = rounded.toFixed(2).replace(/0+$/, '').split('.');
+
+  let intPart = '0';
+  let fracPart = '';
+  if (absStr.length <= scaleDecimals) {
+    fracPart = absStr.padStart(scaleDecimals, '0').replace(/0+$/, '');
+  } else {
+    intPart = absStr.slice(0, absStr.length - scaleDecimals);
+    fracPart = absStr.slice(absStr.length - scaleDecimals).replace(/0+$/, '');
+  }
+
   const formattedInt = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return `${sign}${formattedInt},${decPart}`;
+  return fracPart ? `${sign}${formattedInt},${fracPart}` : `${sign}${formattedInt}`;
 }
 
 /**
- * Tính tổ hợp C(n, k) có giới hạn trần để không tràn số nguyên an toàn.
+ * Tính chính xác tổ hợp C(n, k) bằng BigInt với ngưỡng cắt trần `cap` (không sai số chia thực).
  *
  * @param {number} n
  * @param {number} k
  * @param {number} cap
- * @returns {number}
+ * @returns {{ value: number, capped: boolean }}
  */
-function safeBinomial(n, k, cap = 1_000_000) {
-  if (k < 0 || k > n) return 0;
-  if (k === 0 || k === n) return 1;
+function calcBinomialCapped(n, k, cap = 1_000_000) {
+  if (k < 0 || k > n) return { value: 0, capped: false };
+  if (k === 0 || k === n) return { value: 1, capped: false };
   const kk = Math.min(k, n - k);
-  let res = 1;
+  const bigCap = BigInt(cap);
+  let res = 1n;
   for (let i = 1; i <= kk; i++) {
-    res = Math.round((res * (n - kk + i)) / i);
-    if (res >= cap) return cap;
+    res = (res * BigInt(n - kk + i)) / BigInt(i);
+    if (res >= bigCap) {
+      return { value: cap, capped: true };
+    }
   }
-  return res;
+  return { value: Number(res), capped: false };
 }
 
 /**
@@ -225,7 +315,9 @@ function computeDateSpanDays(items) {
  * @returns {number}
  */
 function compareSolutions(a, b) {
-  if (a.intAbsDiff !== b.intAbsDiff) return a.intAbsDiff - b.intAbsDiff;
+  if (a.bigAbsDiff !== b.bigAbsDiff) {
+    return a.bigAbsDiff < b.bigAbsDiff ? -1 : 1;
+  }
   if (a.itemCount !== b.itemCount) return a.itemCount - b.itemCount;
   if (a.dateSpanDays !== b.dateSpanDays) return a.dateSpanDays - b.dateSpanDays;
 
@@ -240,36 +332,34 @@ function compareSolutions(a, b) {
 }
 
 /**
- * Tiền tính toán bảng cận trên và cận dưới CHÍNH XÁC theo số lượng phần tử chọn (Exact Cardinality Bounds):
- * - maxExact[idx * stride + rem]: tổng đại số lớn nhất có thể khi chọn ĐÚNG `rem` phần tử từ `idx..N-1`
- * - minExact[idx * stride + rem]: tổng đại số nhỏ nhất có thể khi chọn ĐÚNG `rem` phần tử từ `idx..N-1`
+ * Tiền tính toán bảng cận trên và cận dưới CHÍNH XÁC theo số lượng phần tử chọn bằng BigInt:
+ * - maxExact[idx * stride + rem]: tổng đại số lớn nhất khi chọn ĐÚNG `rem` phần tử từ `idx..N-1`
+ * - minExact[idx * stride + rem]: tổng đại số nhỏ nhất khi chọn ĐÚNG `rem` phần tử từ `idx..N-1`
  *
- * Độ phức tạp: O(N * maxRem) về thời gian và bộ nhớ — chạy < 1ms cho hàng nghìn dòng,
- * đúng tuyệt đối 100% cho cả số dương, số âm và hỗn hợp dương/âm!
+ * Độ phức tạp: O(N * maxRem), không bao giờ tràn số dù quy mô hàng triệu tỷ kết hợp 6 số lẻ thập phân!
  *
- * @param {Float64Array} candAmounts
+ * @param {bigint[]} candAmounts
  * @param {number} maxRem
- * @returns {{ maxExact: Float64Array, minExact: Float64Array, stride: number }}
+ * @returns {{ maxExact: bigint[], minExact: bigint[], stride: number }}
  */
 function buildExactCardinalityBounds(candAmounts, maxRem) {
   const n = candAmounts.length;
   const stride = maxRem + 1;
-  const maxExact = new Float64Array(n * stride);
-  const minExact = new Float64Array(n * stride);
+  const maxExact = new Array(n * stride).fill(0n);
+  const minExact = new Array(n * stride).fill(0n);
 
   if (n === 0 || maxRem <= 0) {
     return { maxExact, minExact, stride };
   }
 
-  const topLargest = new Float64Array(maxRem);  // giảm dần: topLargest[0] >= topLargest[1] >= ...
-  const topSmallest = new Float64Array(maxRem); // tăng dần: topSmallest[0] <= topSmallest[1] <= ...
+  const topLargest = new Array(maxRem).fill(0n);
+  const topSmallest = new Array(maxRem).fill(0n);
   let count = 0;
 
   for (let idx = n - 1; idx >= 0; idx--) {
     const val = candAmounts[idx];
     const nextCount = count < maxRem ? count + 1 : maxRem;
 
-    // Cập nhật mảng `maxRem` phần tử lớn nhất về mặt đại số
     if (count < maxRem || val > topLargest[count - 1]) {
       let pos = nextCount - 1;
       while (pos > 0 && topLargest[pos - 1] < val) {
@@ -279,7 +369,6 @@ function buildExactCardinalityBounds(candAmounts, maxRem) {
       topLargest[pos] = val;
     }
 
-    // Cập nhật mảng `maxRem` phần tử nhỏ nhất về mặt đại số
     if (count < maxRem || val < topSmallest[count - 1]) {
       let pos = nextCount - 1;
       while (pos > 0 && topSmallest[pos - 1] > val) {
@@ -292,8 +381,8 @@ function buildExactCardinalityBounds(candAmounts, maxRem) {
     count = nextCount;
 
     const base = idx * stride;
-    let sumMax = 0;
-    let sumMin = 0;
+    let sumMax = 0n;
+    let sumMin = 0n;
     for (let rem = 1; rem <= count; rem++) {
       sumMax += topLargest[rem - 1];
       sumMin += topSmallest[rem - 1];
@@ -306,16 +395,89 @@ function buildExactCardinalityBounds(candAmounts, maxRem) {
 }
 
 /**
- * Sinh tối đa `limit` tập con kích thước `c` từ `groupItems` (đã sắp xếp tăng dần theo ngày & dòng Excel).
- * Ưu tiên các cửa sổ trượt liên tiếp (tối ưu khoảng cách ngày nhỏ nhất) kết hợp thứ tự từ điển đầu tiên.
+ * Quét TOÀN BỘ `m - c + 1` cửa sổ trượt liên tiếp trên mảng nhóm trùng mệnh giá (đã sắp theo ngày & dòng Excel),
+ * tính khoảng cách ngày kết hợp với `pinnedItems` và sắp xếp cửa sổ tối ưu nhất lên đầu.
  *
- * @param {object[]} groupItems
+ * @param {object} grp
  * @param {number} c
+ * @param {number} pinnedMinTs
+ * @param {number} pinnedMaxTs
+ * @param {boolean} hasPinnedTs
+ * @returns {Array<{ offset: number, hasTs: boolean, wMinTs: number, wMaxTs: number, ownSpan: number, combinedSpan: number, firstRow: number }>}
+ */
+function buildSortedGroupWindows(grp, c, pinnedMinTs, pinnedMaxTs, hasPinnedTs) {
+  const m = grp.count;
+  const items = grp.items;
+  const tsArr = grp.dayTimestamps;
+  const numWin = m - c + 1;
+  const windows = new Array(numWin);
+
+  for (let offset = 0; offset < numWin; offset++) {
+    const firstTs = tsArr[offset];
+    let hasTs = false;
+    let wMinTs = 0;
+    let wMaxTs = 0;
+
+    if (firstTs !== null) {
+      hasTs = true;
+      wMinTs = firstTs;
+      const lastTs = tsArr[offset + c - 1];
+      if (lastTs !== null) {
+        wMaxTs = lastTs;
+      } else {
+        let p = offset + c - 2;
+        while (p > offset && tsArr[p] === null) p--;
+        wMaxTs = tsArr[p] !== null ? tsArr[p] : firstTs;
+      }
+    }
+
+    const ownSpan = hasTs ? wMaxTs - wMinTs : 0;
+    let combinedSpan = ownSpan;
+    if (hasPinnedTs && hasTs) {
+      const mergedMin = pinnedMinTs < wMinTs ? pinnedMinTs : wMinTs;
+      const mergedMax = pinnedMaxTs > wMaxTs ? pinnedMaxTs : wMaxTs;
+      combinedSpan = mergedMax - mergedMin;
+    } else if (hasPinnedTs) {
+      combinedSpan = pinnedMaxTs - pinnedMinTs;
+    }
+
+    const firstRow = Number.isFinite(items[offset].excelRowNumber)
+      ? items[offset].excelRowNumber
+      : Number.MAX_SAFE_INTEGER;
+
+    windows[offset] = {
+      offset,
+      hasTs,
+      wMinTs,
+      wMaxTs,
+      ownSpan,
+      combinedSpan,
+      firstRow,
+    };
+  }
+
+  windows.sort((a, b) => {
+    if (a.combinedSpan !== b.combinedSpan) return a.combinedSpan - b.combinedSpan;
+    if (a.ownSpan !== b.ownSpan) return a.ownSpan - b.ownSpan;
+    if (a.firstRow !== b.firstRow) return a.firstRow - b.firstRow;
+    return a.offset - b.offset;
+  });
+
+  return windows;
+}
+
+/**
+ * Sinh tập con kích thước `c` từ `grp` dựa trên danh sách cửa sổ tối ưu kết hợp thứ tự từ điển bổ sung.
+ *
+ * @param {object} grp
+ * @param {number} c
+ * @param {Array} sortedWindows
  * @param {number} limit
  * @param {boolean} exactAll
  * @returns {object[][]}
  */
-function sampleGroupSubsets(groupItems, c, limit, exactAll = false) {
+function buildGroupSubsets(grp, c, sortedWindows, limit, exactAll = false) {
+  const groupItems = grp.items;
   const m = groupItems.length;
   if (c === 0) return [[]];
   if (c === m) return [groupItems.slice()];
@@ -354,27 +516,29 @@ function sampleGroupSubsets(groupItems, c, limit, exactAll = false) {
     results.push(subset);
   };
 
-  // 1. Quét cửa sổ trượt liên tiếp theo thời gian để bắt đúng cụm hóa đơn cùng ngày / gần ngày nhất
-  const maxSlide = Math.min(m - c, Math.max(limit, 48));
-  for (let offset = 0; offset <= maxSlide && results.length < Math.max(limit, 48); offset++) {
+  // 1. Lấy các cửa sổ trượt tốt nhất (đã quét toàn bộ m - c + 1 vị trí trên toàn danh sách)
+  for (let w = 0; w < sortedWindows.length && results.length < limit; w++) {
+    const off = sortedWindows[w].offset;
     const idxArr = new Array(c);
-    for (let i = 0; i < c; i++) idxArr[i] = offset + i;
+    for (let i = 0; i < c; i++) idxArr[i] = off + i;
     addByIndices(idxArr);
   }
 
-  // 2. Bổ sung thêm các tổ hợp đầu theo thứ tự từ điển nếu còn chỗ
-  const indices = new Array(c);
-  for (let i = 0; i < c; i++) indices[i] = i;
-  while (results.length < limit) {
-    addByIndices(indices);
-    let pos = c - 1;
-    while (pos >= 0 && indices[pos] === m - c + pos) {
-      pos--;
-    }
-    if (pos < 0) break;
-    indices[pos]++;
-    for (let j = pos + 1; j < c; j++) {
-      indices[j] = indices[j - 1] + 1;
+  // 2. Bổ sung thêm các tổ hợp không liên tiếp theo thứ tự từ điển nếu còn chỗ
+  if (results.length < limit) {
+    const indices = new Array(c);
+    for (let i = 0; i < c; i++) indices[i] = i;
+    while (results.length < limit) {
+      addByIndices(indices);
+      let pos = c - 1;
+      while (pos >= 0 && indices[pos] === m - c + pos) {
+        pos--;
+      }
+      if (pos < 0) break;
+      indices[pos]++;
+      for (let j = pos + 1; j < c; j++) {
+        indices[j] = indices[j - 1] + 1;
+      }
     }
   }
 
@@ -410,8 +574,9 @@ function makeEmptyResult({
 /**
  * Tìm tổ hợp các khoản tiền khớp mục tiêu trong biên độ sai số ± tolerance.
  * Hỗ trợ đầy đủ cả số dương (phải thu/hóa đơn) và số âm (chiết khấu/trả hàng/cấn trừ),
+ * số nguyên lớn hàng trăm nghìn tỷ VNĐ, số thập phân 1..6 chữ số & công thức chia Excel không làm tròn,
  * ghim dòng bắt buộc (pinnedIds), loại trừ dòng (excludedIds), lọc khoảng ngày & từ khóa,
- * tìm kiếm sâu dần theo số lượng phần tử (Iterative Deepening) kèm cắt tỉa cận đúng và chống bùng nổ trùng mệnh giá.
+ * tìm kiếm sâu dần theo số lượng phần tử (Iterative Deepening) kèm cắt tỉa cận đúng BigInt và chống bùng nổ trùng mệnh giá.
  *
  * @param {object} options
  * @param {((progress: { exploredNodes: number, foundCount: number, currentSize: number }) => void) | null} onProgress
@@ -526,7 +691,6 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     rawCandidates.push(item);
   }
 
-  // Nếu có pinnedId bị loại trừ hoặc không tồn tại trong dữ liệu thì không thể có nghiệm chứa đủ pinnedIds
   if (pinnedItems.length < uniquePinnedIds.length) {
     return makeEmptyResult({
       candidateCount: rawCandidates.length,
@@ -544,52 +708,63 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     });
   }
 
-  // 2. Xác định hệ số nhân nguyên (scale = 1 cho số nguyên VNĐ, scale = 100 nếu có phần thập phân)
-  let useDecimalScale = hasDecimalFraction(targetAmount) || hasDecimalFraction(safeTolerance);
-  if (!useDecimalScale) {
-    for (let i = 0; i < pinnedItems.length; i++) {
-      if (hasDecimalFraction(pinnedItems[i].amount)) {
-        useDecimalScale = true;
-        break;
-      }
-    }
-  }
-  if (!useDecimalScale) {
-    for (let i = 0; i < rawCandidates.length; i++) {
-      if (hasDecimalFraction(rawCandidates[i].amount)) {
-        useDecimalScale = true;
-        break;
-      }
-    }
-  }
-
-  const scale = useDecimalScale ? 100 : 1;
-  const intTarget = Math.round(targetAmount * scale);
-  const initialIntTolerance = Math.round(safeTolerance * scale);
-
-  let pinnedIntSum = 0;
+  // 2. Phân tích bậc thập phân chính xác của tập dữ liệu (0..6 chữ số thập phân + phát hiện số thực lặp vô hạn)
+  let maxDetectedDecimals = Math.max(
+    getDecimalDigitsCount(targetAmount),
+    getDecimalDigitsCount(safeTolerance)
+  );
   for (let i = 0; i < pinnedItems.length; i++) {
-    pinnedIntSum += Math.round(pinnedItems[i].amount * scale);
+    const d = getDecimalDigitsCount(pinnedItems[i].amount);
+    if (d > maxDetectedDecimals) maxDetectedDecimals = d;
+  }
+  for (let i = 0; i < rawCandidates.length; i++) {
+    const d = getDecimalDigitsCount(rawCandidates[i].amount);
+    if (d > maxDetectedDecimals) maxDetectedDecimals = d;
   }
 
-  // Lọc bỏ ứng viên có intAmount === 0 sau khi quy đổi và gắn metadata số nguyên
-  const candidatesWithInt = [];
+  const hasRepeatingFloat = maxDetectedDecimals > MAX_EXACT_DECIMALS;
+  const decimals = Math.min(MAX_EXACT_DECIMALS, maxDetectedDecimals);
+
+  const bigTarget = numberToScaledBigInt(targetAmount, decimals);
+  const initialBigTolerance = numberToScaledBigInt(safeTolerance, decimals);
+
+  let pinnedBigSum = 0n;
+  let pinnedMinTs = Infinity;
+  let pinnedMaxTs = -Infinity;
+  let hasPinnedTs = false;
+
+  for (let i = 0; i < pinnedItems.length; i++) {
+    pinnedBigSum += numberToScaledBigInt(pinnedItems[i].amount, decimals);
+    const ts = getItemDayTimestamp(pinnedItems[i]);
+    if (ts !== null) {
+      if (ts < pinnedMinTs) pinnedMinTs = ts;
+      if (ts > pinnedMaxTs) pinnedMaxTs = ts;
+      hasPinnedTs = true;
+    }
+  }
+
+  const candidatesWithBig = [];
   for (let i = 0; i < rawCandidates.length; i++) {
     const item = rawCandidates[i];
-    const intAmount = Math.round(item.amount * scale);
-    if (intAmount === 0) continue;
-    candidatesWithInt.push({
+    const bigAmount = numberToScaledBigInt(item.amount, decimals);
+    if (bigAmount === 0n && !hasRepeatingFloat) continue;
+    const absBigAmount = bigAmount < 0n ? -bigAmount : bigAmount;
+    candidatesWithBig.push({
       item,
-      intAmount,
-      absIntAmount: Math.abs(intAmount),
+      bigAmount,
+      absBigAmount,
       dayTs: getItemDayTimestamp(item),
     });
   }
 
   // 3. Sắp xếp ứng viên theo |amount| giảm dần, dương trước âm, rồi theo ngày & dòng Excel tăng dần
-  candidatesWithInt.sort((a, b) => {
-    if (a.absIntAmount !== b.absIntAmount) return b.absIntAmount - a.absIntAmount;
-    if (a.intAmount !== b.intAmount) return b.intAmount - a.intAmount;
+  candidatesWithBig.sort((a, b) => {
+    if (a.absBigAmount !== b.absBigAmount) {
+      return a.absBigAmount > b.absBigAmount ? -1 : 1;
+    }
+    if (a.bigAmount !== b.bigAmount) {
+      return a.bigAmount > b.bigAmount ? -1 : 1;
+    }
     const hasTa = a.dayTs !== null;
     const hasTb = b.dayTs !== null;
     if (hasTa && hasTb && a.dayTs !== b.dayTs) return a.dayTs - b.dayTs;
@@ -600,39 +775,41 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     return String(a.item.id ?? '').localeCompare(String(b.item.id ?? ''));
   });
 
-  const candidateCount = candidatesWithInt.length;
+  const candidateCount = candidatesWithBig.length;
   const pinnedCount = pinnedItems.length;
 
-  // Mảng phẳng phục vụ bảng cận Exact Cardinality Bounds
-  const candAmounts = new Float64Array(candidateCount);
+  const candBigAmounts = new Array(candidateCount);
   for (let i = 0; i < candidateCount; i++) {
-    candAmounts[i] = candidatesWithInt[i].intAmount;
+    candBigAmounts[i] = candidatesWithBig[i].bigAmount;
   }
 
-  // Gom các ứng viên trùng hệt mệnh giá có dấu thành từng Value Group liên tiếp để chống bùng nổ tổ hợp
+  // Gom các ứng viên trùng hệt mệnh giá có dấu thành từng Value Group liên tiếp
   const groups = [];
   for (let i = 0; i < candidateCount; ) {
-    const val = candidatesWithInt[i].intAmount;
-    const groupItems = [candidatesWithInt[i].item];
+    const val = candidatesWithBig[i].bigAmount;
+    const groupItems = [candidatesWithBig[i].item];
+    const dayTimestamps = [candidatesWithBig[i].dayTs];
     let j = i + 1;
-    while (j < candidateCount && candidatesWithInt[j].intAmount === val) {
-      groupItems.push(candidatesWithInt[j].item);
+    while (j < candidateCount && candidatesWithBig[j].bigAmount === val) {
+      groupItems.push(candidatesWithBig[j].item);
+      dayTimestamps.push(candidatesWithBig[j].dayTs);
       j++;
     }
     groups.push({
-      intAmount: val,
-      absIntAmount: Math.abs(val),
-      displayAmount: unscaleAmount(val, scale),
+      bigAmount: val,
+      absBigAmount: val < 0n ? -val : val,
+      formattedLabel: formatScaledBigIntVN(val, decimals),
       startIdx: i,
       count: j - i,
       items: groupItems,
+      dayTimestamps,
     });
     i = j;
   }
 
   const numGroups = groups.length;
   const maxRem = Math.min(candidateCount, safeMaxItems - pinnedCount);
-  const { maxExact, minExact, stride } = buildExactCardinalityBounds(candAmounts, maxRem);
+  const { maxExact, minExact, stride } = buildExactCardinalityBounds(candBigAmounts, maxRem);
 
   // 4. Trạng thái tìm kiếm, kiểm soát thời gian & bộ nhớ thu thập nghiệm
   let exploredNodes = 0;
@@ -640,33 +817,80 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
   let stopped = false;
   let lastProgressTime = startTime;
   let currentSize = pinnedCount;
+  let multisetCounter = 0;
 
   const collectedSolutions = [];
   const seenSolutionIds = new Set();
 
-  const buildSolutionObject = (rawItems, intTotal, duplicateVariantsNote = null) => {
+  const buildSolutionObject = (rawItems, bigTotal, multisetMeta = null) => {
     const sortedItems = rawItems.slice().sort(compareItemsChronological);
     const itemIds = sortedItems.map((it) => it.id);
     const solKey = itemIds.slice().sort().join('\u0001');
     if (seenSolutionIds.has(solKey)) return null;
-    seenSolutionIds.add(solKey);
 
-    const intDiff = intTotal - intTarget;
-    const intAbsDiff = Math.abs(intDiff);
+    let totalAmount;
+    let diff;
+    let absDiff;
+    let isExact;
+    let bigAbsDiff;
+
+    if (!hasRepeatingFloat) {
+      const bigDiff = bigTotal - bigTarget;
+      bigAbsDiff = bigDiff < 0n ? -bigDiff : bigDiff;
+      if (bigAbsDiff > initialBigTolerance) return null;
+
+      totalAmount = scaledBigIntToNumber(bigTotal, decimals);
+      diff = scaledBigIntToNumber(bigDiff, decimals);
+      absDiff = scaledBigIntToNumber(bigAbsDiff, decimals);
+      isExact = bigDiff === 0n;
+    } else {
+      // Kiểm định lại bằng tổng dấu phẩy động thực tế cho các công thức chia lặp vô hạn (như =1000000/3)
+      let rawSum = 0;
+      let sumAbsTerms = Math.abs(targetAmount);
+      for (let i = 0; i < sortedItems.length; i++) {
+        rawSum += sortedItems[i].amount;
+        sumAbsTerms += Math.abs(sortedItems[i].amount);
+      }
+      const floatEps = Math.max(1e-9, Number.EPSILON * sumAbsTerms * 8);
+      const rawDiff = rawSum - targetAmount;
+      const rawAbsDiff = Math.abs(rawDiff);
+
+      if (rawAbsDiff > safeTolerance + floatEps) {
+        return null;
+      }
+
+      if (rawAbsDiff <= floatEps) {
+        totalAmount = targetAmount === 0 ? 0 : targetAmount;
+        diff = 0;
+        absDiff = 0;
+        isExact = true;
+        bigAbsDiff = 0n;
+      } else {
+        totalAmount = rawSum === 0 ? 0 : rawSum;
+        diff = rawDiff === 0 ? 0 : rawDiff;
+        absDiff = rawAbsDiff;
+        isExact = false;
+        bigAbsDiff = numberToScaledBigInt(rawAbsDiff, decimals);
+      }
+    }
+
+    seenSolutionIds.add(solKey);
 
     return {
       id: `sol:${itemIds.join(',')}`,
+      canonicalKey: solKey,
       items: sortedItems,
       itemIds,
       itemCount: sortedItems.length,
-      totalAmount: unscaleAmount(intTotal, scale),
-      targetAmount,
-      diff: unscaleAmount(intDiff, scale),
-      absDiff: unscaleAmount(intAbsDiff, scale),
-      isExact: intDiff === 0,
+      totalAmount,
+      targetAmount: targetAmount === 0 ? 0 : targetAmount,
+      diff,
+      absDiff,
+      isExact,
       dateSpanDays: computeDateSpanDays(sortedItems),
-      duplicateVariantsNote,
-      intAbsDiff,
+      duplicateVariantsNote: null,
+      bigAbsDiff,
+      multisetMeta,
     };
   };
 
@@ -696,8 +920,11 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     stopped = true;
   } else if (pinnedCount >= Math.max(1, safeMinItems) && pinnedCount <= safeMaxItems) {
     exploredNodes++;
-    if (Math.abs(pinnedIntSum - intTarget) <= initialIntTolerance) {
-      const pinnedSol = buildSolutionObject(pinnedItems, pinnedIntSum, null);
+    const repeatSlack0 = hasRepeatingFloat ? BigInt(pinnedCount + 2) : 0n;
+    const pinDiff = pinnedBigSum - bigTarget;
+    const pinAbsDiff = pinDiff < 0n ? -pinDiff : pinDiff;
+    if (pinAbsDiff <= initialBigTolerance + repeatSlack0) {
+      const pinnedSol = buildSolutionObject(pinnedItems, pinnedBigSum, null);
       if (pinnedSol) {
         collectedSolutions.push(pinnedSol);
       }
@@ -711,26 +938,38 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
 
   /**
    * Từ một multiset mệnh giá hợp lệ, sinh tối đa MAX_VARIANTS_PER_MULTISET (3) phương án dòng cụ thể
-   * tốt nhất (khoảng cách ngày ngắn nhất, dòng Excel sớm nhất) và đính kèm ghi chú nếu rút gọn trùng lặp.
+   * tối ưu nhất về khoảng cách ngày (kể cả căn chỉnh đồng bộ ngày giữa nhiều nhóm trùng) và gắn metadata multiset.
    */
-  const expandMultisetSolutions = (intTotal, outBuffer) => {
+  const expandMultisetSolutions = (bigTotal, outBuffer) => {
     let totalVariants = 1;
+    let isCapped = false;
     const dupGroupLabels = [];
-    let multiChoiceGroupCount = 0;
+    const multiChoiceDepthIndices = [];
 
     for (let d = 0; d < chosenDepth; d++) {
       const grp = groups[chosenGroupIdx[d]];
       const c = chosenGroupCnt[d];
       if (grp.count > c) {
-        multiChoiceGroupCount++;
-        const ways = safeBinomial(grp.count, c, 1_000_000);
-        totalVariants = Math.min(1_000_000, totalVariants * ways);
-        dupGroupLabels.push(formatAmountVN(grp.displayAmount));
+        multiChoiceDepthIndices.push(d);
+        const ways = calcBinomialCapped(grp.count, c, 1_000_000);
+        if (ways.capped || isCapped) {
+          isCapped = true;
+          totalVariants = 1_000_000;
+        } else {
+          const prod = totalVariants * ways.value;
+          if (prod >= 1_000_000) {
+            isCapped = true;
+            totalVariants = 1_000_000;
+          } else {
+            totalVariants = prod;
+          }
+        }
+        dupGroupLabels.push(grp.formattedLabel);
       }
     }
 
     // Trường hợp duy nhất 1 tổ hợp dòng cụ thể
-    if (totalVariants === 1) {
+    if (!isCapped && totalVariants === 1) {
       const rawItems = pinnedItems.slice();
       for (let d = 0; d < chosenDepth; d++) {
         const grpItems = groups[chosenGroupIdx[d]].items;
@@ -738,30 +977,139 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
           rawItems.push(grpItems[k]);
         }
       }
-      const sol = buildSolutionObject(rawItems, intTotal, null);
+      const sol = buildSolutionObject(rawItems, bigTotal, null);
       if (sol) outBuffer.push(sol);
       return;
     }
 
-    // Sinh các tập con ứng viên cho từng nhóm mệnh giá
-    const exactEnum = totalVariants <= 36;
-    const perGroupLimit = exactEnum ? 36 : multiChoiceGroupCount === 1 ? 48 : 8;
+    const multisetMeta = {
+      multisetId: ++multisetCounter,
+      totalVariants,
+      isCapped,
+      amountsLabel: dupGroupLabels.join('; '),
+    };
+
+    const exactEnum = !isCapped && totalVariants <= 36;
+    const allGroupWindows = new Array(chosenDepth);
     const groupSubsetsList = new Array(chosenDepth);
+    const perGroupLimit = exactEnum ? 36 : multiChoiceDepthIndices.length === 1 ? 48 : 10;
 
     for (let d = 0; d < chosenDepth; d++) {
       const grp = groups[chosenGroupIdx[d]];
       const c = chosenGroupCnt[d];
-      groupSubsetsList[d] = sampleGroupSubsets(grp.items, c, perGroupLimit, exactEnum);
+      const sortedWin =
+        !exactEnum && grp.count > c
+          ? buildSortedGroupWindows(grp, c, pinnedMinTs, pinnedMaxTs, hasPinnedTs)
+          : [];
+      allGroupWindows[d] = sortedWin;
+      groupSubsetsList[d] = buildGroupSubsets(grp, c, sortedWin, perGroupLimit, exactEnum);
     }
 
-    // Kết hợp thành danh sách tổ hợp dòng ứng viên (tối đa 48 biến thể để chọn top 3 tốt nhất)
-    const candidateCombos = [];
-    const maxComboPool = 48;
+    const tempSolutions = [];
+    const localSeen = new Set();
+    const maxComboPool = 64;
 
+    const pushCandidateCombo = (rawItems) => {
+      const sortedItems = rawItems.slice().sort(compareItemsChronological);
+      const key = sortedItems.map((it) => it.id).sort().join('\u0001');
+      if (localSeen.has(key)) return;
+      localSeen.add(key);
+      tempSolutions.push({
+        sortedItems,
+        dateSpanDays: computeDateSpanDays(sortedItems),
+      });
+    };
+
+    // 1. Khi có >= 2 nhóm trùng mệnh giá và không vét cạn, thực hiện căn chỉnh mốc ngày gần nhất giữa các nhóm
+    if (!exactEnum && multiChoiceDepthIndices.length >= 2) {
+      const anchorDepth = multiChoiceDepthIndices[0];
+      const anchorWindows = allGroupWindows[anchorDepth];
+      const maxAnchors = Math.min(anchorWindows.length, 24);
+
+      for (let a = 0; a < maxAnchors && tempSolutions.length < maxComboPool; a++) {
+        const anchorWin = anchorWindows[a];
+        let curHasTs = hasPinnedTs;
+        let curMinTs = hasPinnedTs ? pinnedMinTs : Infinity;
+        let curMaxTs = hasPinnedTs ? pinnedMaxTs : -Infinity;
+
+        if (anchorWin.hasTs) {
+          if (!curHasTs) {
+            curHasTs = true;
+            curMinTs = anchorWin.wMinTs;
+            curMaxTs = anchorWin.wMaxTs;
+          } else {
+            if (anchorWin.wMinTs < curMinTs) curMinTs = anchorWin.wMinTs;
+            if (anchorWin.wMaxTs > curMaxTs) curMaxTs = anchorWin.wMaxTs;
+          }
+        }
+
+        const alignedItems = pinnedItems.slice();
+
+        for (let d = 0; d < chosenDepth; d++) {
+          const grp = groups[chosenGroupIdx[d]];
+          const c = chosenGroupCnt[d];
+
+          if (grp.count === c) {
+            for (let k = 0; k < grp.items.length; k++) alignedItems.push(grp.items[k]);
+            continue;
+          }
+
+          let chosenWin = anchorWin;
+          if (d !== anchorDepth) {
+            const dWindows = allGroupWindows[d];
+            let bestWin = dWindows[0];
+            let bestSpan = Infinity;
+
+            for (let w = 0; w < dWindows.length; w++) {
+              const candW = dWindows[w];
+              let span = candW.ownSpan;
+              if (curHasTs && candW.hasTs) {
+                const mMin = curMinTs < candW.wMinTs ? curMinTs : candW.wMinTs;
+                const mMax = curMaxTs > candW.wMaxTs ? curMaxTs : candW.wMaxTs;
+                span = mMax - mMin;
+              } else if (curHasTs) {
+                span = curMaxTs - curMinTs;
+              }
+
+              if (
+                span < bestSpan ||
+                (span === bestSpan &&
+                  (candW.ownSpan < bestWin.ownSpan ||
+                    (candW.ownSpan === bestWin.ownSpan && candW.firstRow < bestWin.firstRow)))
+              ) {
+                bestSpan = span;
+                bestWin = candW;
+                if (span === 0 && candW.ownSpan === 0) break;
+              }
+            }
+
+            chosenWin = bestWin;
+            if (chosenWin.hasTs) {
+              if (!curHasTs) {
+                curHasTs = true;
+                curMinTs = chosenWin.wMinTs;
+                curMaxTs = chosenWin.wMaxTs;
+              } else {
+                if (chosenWin.wMinTs < curMinTs) curMinTs = chosenWin.wMinTs;
+                if (chosenWin.wMaxTs > curMaxTs) curMaxTs = chosenWin.wMaxTs;
+              }
+            }
+          }
+
+          for (let k = 0; k < c; k++) {
+            alignedItems.push(grp.items[chosenWin.offset + k]);
+          }
+        }
+
+        pushCandidateCombo(alignedItems);
+      }
+    }
+
+    // 2. Ghép tổ hợp chéo từ các tập con đầu bảng (khử trùng trực tiếp ngay khi đẩy vào)
     const combineGroups = (depthIdx, accItems) => {
-      if (candidateCombos.length >= maxComboPool) return;
+      if (tempSolutions.length >= maxComboPool) return;
       if (depthIdx === chosenDepth) {
-        candidateCombos.push(accItems.slice());
+        pushCandidateCombo(accItems);
         return;
       }
       const subsets = groupSubsetsList[depthIdx];
@@ -771,41 +1119,11 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
         for (let j = 0; j < sub.length; j++) accItems.push(sub[j]);
         combineGroups(depthIdx + 1, accItems);
         accItems.length = prevLen;
-        if (candidateCombos.length >= maxComboPool) return;
+        if (tempSolutions.length >= maxComboPool) return;
       }
     };
 
-    // Nếu có nhiều nhóm trùng đồng thời và không vét cạn, ưu tiên ghép đồng bộ theo chỉ số thời gian trước
-    if (!exactEnum && multiChoiceGroupCount > 1) {
-      const maxAligned = 16;
-      for (let alignIdx = 0; alignIdx < maxAligned && candidateCombos.length < maxComboPool; alignIdx++) {
-        const aligned = pinnedItems.slice();
-        for (let d = 0; d < chosenDepth; d++) {
-          const subsets = groupSubsetsList[d];
-          const chosenSub = subsets[Math.min(alignIdx, subsets.length - 1)];
-          for (let j = 0; j < chosenSub.length; j++) aligned.push(chosenSub[j]);
-        }
-        candidateCombos.push(aligned);
-      }
-    }
-
     combineGroups(0, pinnedItems.slice());
-
-    // Xây dựng các nghiệm tạm, sắp xếp theo khoảng cách ngày ngắn nhất & dòng Excel sớm nhất
-    const tempSolutions = [];
-    const localSeen = new Set();
-
-    for (let i = 0; i < candidateCombos.length; i++) {
-      const sortedItems = candidateCombos[i].slice().sort(compareItemsChronological);
-      const key = sortedItems.map((it) => it.id).sort().join('\u0001');
-      if (localSeen.has(key)) continue;
-      localSeen.add(key);
-
-      tempSolutions.push({
-        sortedItems,
-        dateSpanDays: computeDateSpanDays(sortedItems),
-      });
-    }
 
     tempSolutions.sort((a, b) => {
       if (a.dateSpanDays !== b.dateSpanDays) return a.dateSpanDays - b.dateSpanDays;
@@ -823,20 +1141,8 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     });
 
     const emitCount = Math.min(tempSolutions.length, MAX_VARIANTS_PER_MULTISET);
-    let note = null;
-
-    if (totalVariants > emitCount) {
-      const omitted = totalVariants - emitCount;
-      const amountsLabel = dupGroupLabels.join('; ');
-      if (totalVariants < 1_000_000) {
-        note = `Còn ${formatIntVN(omitted)} cách chọn tương đương từ các dòng cùng số tiền (${amountsLabel}) có thể thay thế`;
-      } else {
-        note = `Còn nhiều cách chọn tương đương từ các dòng cùng số tiền (${amountsLabel}) có thể thay thế`;
-      }
-    }
-
     for (let i = 0; i < emitCount; i++) {
-      const sol = buildSolutionObject(tempSolutions[i].sortedItems, intTotal, note);
+      const sol = buildSolutionObject(tempSolutions[i].sortedItems, bigTotal, multisetMeta);
       if (sol) outBuffer.push(sol);
     }
   };
@@ -844,25 +1150,24 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
   // 5. Iterative Deepening theo tổng số phần tử k = max(1, minItems, pinnedCount + 1) .. maxItems
   const startK = Math.max(1, safeMinItems, pinnedCount + 1);
   const endK = Math.min(safeMaxItems, pinnedCount + candidateCount);
-  let globalActiveIntTolerance = initialIntTolerance;
+  let globalActiveBigTolerance = initialBigTolerance;
 
-  const keepPerLevel = Math.max(100, safeMaxResults * 2);
+  const keepPerLevel = Math.max(100, safeMaxResults * 3);
   const compactThreshold = keepPerLevel * 2;
 
   for (let k = startK; k <= endK && !stopped; k++) {
-    // Trước khi sang mức k lớn hơn, kiểm tra xem tập nghiệm ở các mức < k đã tối ưu tuyệt đối chưa
-    if (collectedSolutions.length >= safeMaxResults) {
+    // Chỉ khi chuyển sang mức k mới (itemCount lớn hơn nghiêm ngặt) mới được phép dừng sớm hoặc trừ 1 đơn vị sai số
+    if (!hasRepeatingFloat && collectedSolutions.length >= safeMaxResults) {
       collectedSolutions.sort(compareSolutions);
-      if (collectedSolutions.length > safeMaxResults * 4) {
-        collectedSolutions.length = safeMaxResults * 4;
+      if (collectedSolutions.length > keepPerLevel * 2) {
+        collectedSolutions.length = keepPerLevel * 2;
       }
       const kthBest = collectedSolutions[safeMaxResults - 1];
-      if (kthBest.intAbsDiff === 0) {
-        // Đã có đủ >= maxResults nghiệm khớp chính xác 100% với ít dòng hơn -> không nghiệm nào ở mức >= k có thể vượt qua!
+      if (kthBest.bigAbsDiff === 0n) {
         break;
       }
-      if (kthBest.intAbsDiff - 1 < globalActiveIntTolerance) {
-        globalActiveIntTolerance = kthBest.intAbsDiff - 1;
+      if (kthBest.bigAbsDiff - 1n < globalActiveBigTolerance) {
+        globalActiveBigTolerance = kthBest.bigAbsDiff - 1n;
       }
     }
 
@@ -871,24 +1176,22 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     if (stopped) break;
 
     const r = k - pinnedCount;
-    let levelIntTolerance = globalActiveIntTolerance;
-    let levelLowBound = intTarget - levelIntTolerance;
-    let levelHighBound = intTarget + levelIntTolerance;
-    let stopCurrentLevel = false;
+    const repeatSlack = hasRepeatingFloat ? BigInt(k + 2) : 0n;
+    let levelBigTolerance = globalActiveBigTolerance;
+    let levelLowBound = bigTarget - levelBigTolerance - repeatSlack;
+    let levelHighBound = bigTarget + levelBigTolerance + repeatSlack;
     const levelSolutions = [];
 
+    // Trong cùng tầng k: KHÔNG dừng sớm và KHÔNG trừ 1 đơn vị sai số để bảo toàn tuyệt đối thứ tự ưu tiên dateSpanDays & excelRowNumber!
     const compactLevelIfNeeded = () => {
       if (levelSolutions.length < compactThreshold) return;
       levelSolutions.sort(compareSolutions);
       levelSolutions.length = keepPerLevel;
       const worstKept = levelSolutions[keepPerLevel - 1];
-      if (worstKept.intAbsDiff === 0) {
-        // Đã thu thập rất nhiều nghiệm khớp tuyệt đối ở mức k hiện tại
-        stopCurrentLevel = true;
-      } else if (worstKept.intAbsDiff - 1 < levelIntTolerance) {
-        levelIntTolerance = worstKept.intAbsDiff - 1;
-        levelLowBound = intTarget - levelIntTolerance;
-        levelHighBound = intTarget + levelIntTolerance;
+      if (!hasRepeatingFloat && worstKept.bigAbsDiff < levelBigTolerance) {
+        levelBigTolerance = worstKept.bigAbsDiff;
+        levelLowBound = bigTarget - levelBigTolerance;
+        levelHighBound = bigTarget + levelBigTolerance;
       }
     };
 
@@ -897,7 +1200,7 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
       if ((exploredNodes & NODE_CHECK_MASK) === 0) {
         checkRuntimeLimits();
       }
-      if (stopped || stopCurrentLevel || groupIdx >= numGroups) return;
+      if (stopped || groupIdx >= numGroups) return;
 
       const grp = groups[groupIdx];
       const startIdx = grp.startIdx;
@@ -912,7 +1215,7 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
       if (rem === 1) {
         let needLow = levelLowBound - currentSum;
         let needHigh = levelHighBound - currentSum;
-        let minReqAbs = needLow > 0 ? needLow : needHigh < 0 ? -needHigh : 0;
+        let minReqAbs = needLow > 0n ? needLow : needHigh < 0n ? -needHigh : 0n;
 
         for (let j = groupIdx; j < numGroups; j++) {
           if (j > groupIdx) {
@@ -920,28 +1223,25 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
             if ((exploredNodes & NODE_CHECK_MASK) === 0) {
               checkRuntimeLimits();
             }
-            if (stopped || stopCurrentLevel) return;
+            if (stopped) return;
           }
 
           const g = groups[j];
-          // Do các nhóm đã sắp xếp giảm dần theo |intAmount|, có thể cắt sớm ngay khi |val| < minReqAbs
-          if (g.absIntAmount < minReqAbs) break;
+          if (g.absBigAmount < minReqAbs) break;
 
-          if (g.intAmount >= needLow && g.intAmount <= needHigh) {
+          if (g.bigAmount >= needLow && g.bigAmount <= needHigh) {
             chosenGroupIdx[chosenDepth] = j;
             chosenGroupCnt[chosenDepth] = 1;
             chosenDepth++;
-            expandMultisetSolutions(currentSum + g.intAmount, levelSolutions);
+            expandMultisetSolutions(currentSum + g.bigAmount, levelSolutions);
             chosenDepth--;
 
             if (levelSolutions.length >= compactThreshold) {
               compactLevelIfNeeded();
-              if (stopCurrentLevel) return;
-              // Cập nhật lại biên tìm kiếm nếu levelIntTolerance vừa được siết chặt
               needLow = levelLowBound - currentSum;
               needHigh = levelHighBound - currentSum;
-              minReqAbs = needLow > 0 ? needLow : needHigh < 0 ? -needHigh : 0;
-              if (g.absIntAmount < minReqAbs) {
+              minReqAbs = needLow > 0n ? needLow : needHigh < 0n ? -needHigh : 0n;
+              if (g.absBigAmount < minReqAbs) {
                 break;
               }
             }
@@ -960,10 +1260,10 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
       if (minC > maxC) return;
 
       for (let c = maxC; c >= minC; c--) {
-        if (stopped || stopCurrentLevel) return;
+        if (stopped) return;
 
         const nextRem = rem - c;
-        const nextSum = currentSum + c * grp.intAmount;
+        const nextSum = currentSum + BigInt(c) * grp.bigAmount;
 
         if (nextRem === 0) {
           if (nextSum >= levelLowBound && nextSum <= levelHighBound) {
@@ -997,7 +1297,7 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
       }
     };
 
-    dfs(0, r, pinnedIntSum);
+    dfs(0, r, pinnedBigSum);
 
     for (let i = 0; i < levelSolutions.length; i++) {
       collectedSolutions.push(levelSolutions[i]);
@@ -1016,9 +1316,20 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     }
   }
 
-  // 6. Sắp xếp nghiệm cuối cùng, cắt top `maxResults` và gỡ trường nội bộ `intAbsDiff`
+  // 6. Sắp xếp nghiệm cuối cùng, cắt top `maxResults`, rồi mới tính chính xác số biến thể trùng bị ẩn thực tế
   collectedSolutions.sort(compareSolutions);
   const topSolutions = collectedSolutions.slice(0, safeMaxResults);
+
+  const shownCountByMultiset = new Map();
+  for (let i = 0; i < topSolutions.length; i++) {
+    const meta = topSolutions[i].multisetMeta;
+    if (meta) {
+      shownCountByMultiset.set(
+        meta.multisetId,
+        (shownCountByMultiset.get(meta.multisetId) || 0) + 1
+      );
+    }
+  }
 
   let exactCount = 0;
   let nearCount = 0;
@@ -1029,7 +1340,20 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
     } else {
       nearCount++;
     }
-    return {
+
+    let duplicateVariantsNote = null;
+    const meta = sol.multisetMeta;
+    if (meta) {
+      const shownCount = shownCountByMultiset.get(meta.multisetId) || 1;
+      if (meta.isCapped) {
+        duplicateVariantsNote = `Còn nhiều cách chọn tương đương từ các dòng cùng số tiền (${meta.amountsLabel}) có thể thay thế`;
+      } else if (meta.totalVariants > shownCount) {
+        const omitted = meta.totalVariants - shownCount;
+        duplicateVariantsNote = `Còn ${formatIntVN(omitted)} cách chọn tương đương từ các dòng cùng số tiền (${meta.amountsLabel}) có thể thay thế`;
+      }
+    }
+
+    const outSol = {
       id: sol.id,
       items: sol.items,
       itemIds: sol.itemIds,
@@ -1040,8 +1364,14 @@ export function findCombinations(options, onProgress = null, shouldCancel = null
       absDiff: sol.absDiff,
       isExact: sol.isExact,
       dateSpanDays: sol.dateSpanDays,
-      duplicateVariantsNote: sol.duplicateVariantsNote,
+      duplicateVariantsNote,
     };
+    Object.defineProperty(outSol, 'canonicalKey', {
+      value: sol.canonicalKey,
+      enumerable: false,
+      configurable: true,
+    });
+    return outSol;
   });
 
   const elapsedMs = Math.max(0, Date.now() - startTime);

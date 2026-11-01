@@ -15,7 +15,34 @@ const VN_SCALE_UNITS = ['', 'nghìn', 'triệu'];
 const LEADING_CURRENCY_RE =
   /^(?:(?:vnđ|vnd|đồng|dong|usd|eur|jpy|gbp|aud|sgd|cny|krw)\.?(?=\s|[+\-−–([\d]|$)|[₫đĐ$€¥£₩]\.?)\s*/i;
 const TRAILING_CURRENCY_RE =
-  /\s*(?:(?<=[\s\d).])(?:vnđ|vnd|đồng|dong|usd|eur|jpy|gbp|aud|sgd|cny|krw)\.?|[₫đĐ$€¥£₩]\.?)$/i;
+  /\s*(?:(?<=[\s\d).\-−–])(?:vnđ|vnd|đồng|dong|usd|eur|jpy|gbp|aud|sgd|cny|krw)\.?|[₫đĐ$€¥£₩]\.?)$/i;
+
+// Strict optional time/timezone suffix after a date (rejects arbitrary prose after a date)
+const OPTIONAL_TIME_SUFFIX_SOURCE =
+  '(?:(?:[T\\s,]+|\\s+-\\s+)\\d{1,2}:\\d{2}(?::\\d{2}(?:[.,]\\d{1,6})?)?(?:\\s*(?:AM|PM|SA|CH))?(?:\\s*(?:Z|UTC|GMT|[+\\-]\\d{2}:?\\d{2}))?)?';
+
+const YMD_DATE_RE = new RegExp(
+  `^(\\d{4})([/.-])(\\d{1,2})\\2(\\d{1,2})${OPTIONAL_TIME_SUFFIX_SOURCE}$`,
+  'i'
+);
+const DMY_DATE_RE = new RegExp(
+  `^(\\d{1,2})([/.-])(\\d{1,2})\\2(\\d{2}|\\d{4})${OPTIONAL_TIME_SUFFIX_SOURCE}$`,
+  'i'
+);
+
+/**
+ * Normalizes Unicode (including Unikey NFD & combining stroke D/d) and exotic spaces.
+ * @param {string} str
+ * @returns {string}
+ */
+function normalizeUnicodeInput(str) {
+  return str
+    .replace(/[dD]\u0335/g, (m) => (m[0] === 'D' ? 'Đ' : 'đ'))
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\s\u00A0\u202F\u2009]+/g, ' ')
+    .trim();
+}
 
 /**
  * Strip leading/trailing currency symbols or ISO codes without touching normal words.
@@ -60,13 +87,14 @@ export function parseVietnameseAmount(raw) {
     return null;
   }
 
-  // Normalize invisible chars & exotic spaces
-  let s = raw
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(/[\s\u00A0\u202F\u2009]+/g, ' ')
-    .trim();
-
+  let s = normalizeUnicodeInput(raw);
   if (!s || !/\d/.test(s)) {
+    return null;
+  }
+
+  // Guard against voucher / partner codes starting with currency-like letters glued directly to a hyphen
+  // e.g. "Đ-00125", "DONG-001", "VND-00125"
+  if (/^(?:vnđ|vnd|đồng|dong|usd|eur|jpy|gbp|aud|sgd|cny|krw|[đĐ])[\-−–]\d/i.test(s)) {
     return null;
   }
 
@@ -115,11 +143,15 @@ export function parseVietnameseAmount(raw) {
       s = stripCurrencyAffixes(s);
     }
   } else if (!hasExplicitSign) {
-    // Handle case where sign appeared after leading currency, e.g. "VND -500.000"
-    const postCurrSign = s.match(/^([+\-−–])\s*/);
-    if (postCurrSign) {
-      if (postCurrSign[1] !== '+') isNegative = true;
-      s = s.slice(postCurrSign[0].length).trim();
+    // Handle case where sign appeared after leading currency, e.g. "VND -500.000" or "1.250.000- VND"
+    const postCurrLeadSign = s.match(/^([+\-−–])\s*/);
+    if (postCurrLeadSign) {
+      if (postCurrLeadSign[1] !== '+') isNegative = true;
+      s = s.slice(postCurrLeadSign[0].length).trim();
+      s = stripCurrencyAffixes(s);
+    } else if (/\s*[\-−–]$/.test(s) && !/^\d+[\-−–]\d+/.test(s)) {
+      isNegative = true;
+      s = s.replace(/\s*[\-−–]$/, '').trim();
       s = stripCurrencyAffixes(s);
     }
   }
@@ -140,6 +172,7 @@ export function parseVietnameseAmount(raw) {
       s.split(',').length <= 2 &&
       !s.includes('.') &&
       /^\d{1,3}(?: \d{3})+$/.test(spaceMain) &&
+      spaceMain[0] !== '0' &&
       (spaceDec === undefined || /^\d+$/.test(spaceDec))
     ) {
       s = spaceDec !== undefined ? `${spaceMain.replace(/ /g, '')},${spaceDec}` : spaceMain.replace(/ /g, '');
@@ -162,6 +195,7 @@ export function parseVietnameseAmount(raw) {
       if (commaParts.length !== 2) return null;
       const [intPart, fracPart] = commaParts;
       if (!intPart || !fracPart || !/^\d+$/.test(fracPart)) return null;
+      if (/^0\d+$/.test(intPart)) return null;
       if (!/^\d{1,3}(?:\.\d{3})+$/.test(intPart) && !/^\d+$/.test(intPart)) return null;
       normalized = `${intPart.replace(/\./g, '')}.${fracPart}`;
     } else {
@@ -170,6 +204,7 @@ export function parseVietnameseAmount(raw) {
       if (dotParts.length !== 2) return null;
       const [intPart, fracPart] = dotParts;
       if (!intPart || !fracPart || !/^\d+$/.test(fracPart)) return null;
+      if (/^0\d+$/.test(intPart)) return null;
       if (!/^\d{1,3}(?:,\d{3})+$/.test(intPart) && !/^\d+$/.test(intPart)) return null;
       normalized = `${intPart.replace(/,/g, '')}.${fracPart}`;
     }
@@ -177,11 +212,12 @@ export function parseVietnameseAmount(raw) {
     const parts = s.split('.');
     if (parts.length > 2) {
       // Multiple dots MUST be valid thousand groupings (rejects dates like "15.03.2026")
-      if (!/^\d{1,3}(?:\.\d{3})+$/.test(s)) return null;
+      if (!/^\d{1,3}(?:\.\d{3})+$/.test(s) || parts[0][0] === '0') return null;
       normalized = parts.join('');
     } else {
       const [intPart, fracPart] = parts;
       if (fracPart === '') return null;
+      if (/^0\d+$/.test(intPart)) return null;
       if (intPart === '') {
         normalized = `0.${fracPart}`;
       } else if (fracPart.length === 3 && intPart.length >= 1 && intPart.length <= 3 && intPart[0] !== '0') {
@@ -195,11 +231,12 @@ export function parseVietnameseAmount(raw) {
   } else if (hasComma) {
     const parts = s.split(',');
     if (parts.length > 2) {
-      if (!/^\d{1,3}(?:,\d{3})+$/.test(s)) return null;
+      if (!/^\d{1,3}(?:,\d{3})+$/.test(s) || parts[0][0] === '0') return null;
       normalized = parts.join('');
     } else {
       const [intPart, fracPart] = parts;
       if (fracPart === '') return null;
+      if (/^0\d+$/.test(intPart)) return null;
       if (intPart === '') {
         normalized = `0.${fracPart}`;
       } else if (fracPart.length === 3 && intPart.length >= 1 && intPart.length <= 3 && intPart[0] !== '0') {
@@ -211,7 +248,8 @@ export function parseVietnameseAmount(raw) {
       }
     }
   } else {
-    if (!/^\d+$/.test(s)) return null;
+    // Reject zero-padded multi-digit codes (e.g. "-00125", "001", tax IDs "0101234567")
+    if (!/^\d+$/.test(s) || /^0\d+$/.test(s)) return null;
     normalized = s;
   }
 
@@ -235,7 +273,25 @@ export function formatNumberVN(value, options = { showPlusSign: false }) {
     return '';
   }
 
-  const absRounded = Math.round((Math.abs(num) + Number.EPSILON) * 100) / 100;
+  if (num === 0) {
+    return '0';
+  }
+
+  // Exact fast-path for safe integers (avoids IEEE-754 * 100 precision overflow near 2^53)
+  if (Number.isSafeInteger(num)) {
+    const formattedInt = String(Math.abs(num)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    const sign =
+      num < 0
+        ? '-'
+        : options && options.showPlusSign && num > 0
+          ? '+'
+          : '';
+    return `${sign}${formattedInt}`;
+  }
+
+  const absVal = Math.abs(num);
+  const absRounded =
+    absVal <= 9e13 ? Math.round((absVal + Number.EPSILON) * 100) / 100 : absVal;
   if (absRounded === 0) {
     return '0';
   }
@@ -256,8 +312,8 @@ export function formatNumberVN(value, options = { showPlusSign: false }) {
 
 /**
  * Live formatting helper for web amount `<input>` fields (typing and pasting).
- * Supports leading `-` or accounting `(...)` for negative numbers, strips noise,
- * and preserves smooth live typing with `.` thousand separators.
+ * Supports leading `-`, trailing SAP `-`, or accounting `(...)` (with or without currency affixes)
+ * for negative numbers, strips noise, and preserves smooth live typing with `.` thousand separators.
  *
  * @param {string | number | null | undefined} rawText
  * @returns {{ numeric: number | null, formatted: string }}
@@ -273,21 +329,42 @@ export function formatInputAmountVN(rawText) {
     return { numeric: cleanNum, formatted: formatNumberVN(cleanNum) };
   }
 
-  const trimmed = String(rawText)
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .trim();
-
-  if (!trimmed) {
+  const normalizedInput = normalizeUnicodeInput(String(rawText));
+  if (!normalizedInput) {
     return { numeric: null, formatted: '' };
   }
 
-  const isParenNegative =
-    (trimmed.startsWith('(') && trimmed.endsWith(')')) || trimmed === '(';
-  const isDashNegative = /^[\-−–]/.test(trimmed);
-  const isNegative = isParenNegative || isDashNegative;
+  let isNegative = false;
+  let core = stripCurrencyAffixes(normalizedInput);
+
+  // Leading sign before or after currency (e.g. "-1.250.000", "VND -2,450,000")
+  if (/^[\-−–]/.test(normalizedInput) || /^[\-−–]/.test(core)) {
+    isNegative = true;
+    core = core.replace(/^[\-−–]\s*/, '').trim();
+    core = stripCurrencyAffixes(core);
+  } else if (/^\+/.test(core)) {
+    core = core.replace(/^\+\s*/, '').trim();
+    core = stripCurrencyAffixes(core);
+  }
+
+  // Trailing minus sign SAP/ERP style (e.g. "1.250.000-", "500,000-", "1.250.000- VND")
+  if (/[\-−–]$/.test(core)) {
+    isNegative = true;
+    core = core.replace(/\s*[\-−–]$/, '').trim();
+    core = stripCurrencyAffixes(core);
+  }
+
+  // Accounting parentheses (e.g. "(500.000)", "VNĐ (25,000,000)", "(500.000) đ", "(")
+  if ((core.startsWith('(') && core.endsWith(')')) || core === '(') {
+    isNegative = true;
+    if (core.length > 1) {
+      core = core.slice(1, -1).trim();
+      core = stripCurrencyAffixes(core);
+    }
+  }
 
   // Keep only digits, dots, and commas to inspect numeric intent
-  const cleaned = trimmed.replace(/[^0-9.,]/g, '');
+  const cleaned = core.replace(/[^0-9.,]/g, '');
 
   if (!/\d/.test(cleaned)) {
     return isNegative ? { numeric: null, formatted: '-' } : { numeric: null, formatted: '' };
@@ -441,7 +518,6 @@ export function parseVietnameseDate(raw) {
   if (raw instanceof Date) {
     const time = raw.getTime();
     if (Number.isNaN(time)) return null;
-    // Use UTC components if midnight UTC (e.g. new Date('2026-03-05')), otherwise local date components
     if (
       raw.getUTCHours() === 0 &&
       raw.getUTCMinutes() === 0 &&
@@ -470,11 +546,7 @@ export function parseVietnameseDate(raw) {
     return null;
   }
 
-  let s = raw
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')
-    .replace(/[\s\u00A0]+/g, ' ')
-    .trim();
-
+  let s = normalizeUnicodeInput(raw);
   if (!s) return null;
 
   // Vietnamese prose date: "Ngày 05 tháng 03 năm 2026"
@@ -489,8 +561,8 @@ export function parseVietnameseDate(raw) {
   // Strip optional leading "Ngày " prefix
   s = s.replace(/^ngày\s+/i, '');
 
-  // 1. Year-first format: YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD (with optional trailing time)
-  const ymdMatch = s.match(/^(\d{4})([/.-])(\d{1,2})\2(\d{1,2})(?:[T\s,].*)?$/);
+  // 1. Year-first format: YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD (with optional strict time suffix)
+  const ymdMatch = s.match(YMD_DATE_RE);
   if (ymdMatch) {
     const year = Number(ymdMatch[1]);
     const month = Number(ymdMatch[3]);
@@ -498,8 +570,8 @@ export function parseVietnameseDate(raw) {
     return buildValidDateResult(year, month, day);
   }
 
-  // 2. Day-first (VN default) format: DD/MM/YYYY, D/M/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (with optional trailing time)
-  const dmyMatch = s.match(/^(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})(?:[T\s,].*)?$/);
+  // 2. Day-first (VN default) format: DD/MM/YYYY, D/M/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (with optional strict time suffix)
+  const dmyMatch = s.match(DMY_DATE_RE);
   if (dmyMatch) {
     const first = Number(dmyMatch[1]);
     const second = Number(dmyMatch[3]);
@@ -509,9 +581,9 @@ export function parseVietnameseDate(raw) {
     return buildValidDateResult(year, month, day);
   }
 
-  // 3. Leading time followed by DD/MM/YYYY (e.g. bank export "08:30:15 15/03/2026")
+  // 3. Leading time followed by DD/MM/YYYY (e.g. bank export "08:30:15 15/03/2026" or "02:35:22 CH 05/03/2026")
   const timeFirstMatch = s.match(
-    /^\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM|SA|CH))?\s+(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})$/i
+    /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d{1,6})?)?(?:\s*(?:AM|PM|SA|CH))?\s+(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})$/i
   );
   if (timeFirstMatch) {
     const first = Number(timeFirstMatch[1]);
@@ -604,7 +676,7 @@ function readThreeDigitBlock(block, readFullHundred) {
 }
 
 /**
- * Reads an non-negative integer string into Vietnamese words (supports > 1,000 tỷ).
+ * Reads a non-negative integer string into Vietnamese words (supports > 1,000 tỷ).
  * @param {string} intStr
  * @returns {string[]}
  */
@@ -612,7 +684,6 @@ function readIntegerDigitsVN(intStr) {
   const clean = intStr.replace(/^0+/, '');
   if (!clean) return ['không'];
 
-  // Split into 3-digit groups from right to left (groups[0] is lowest 3 digits)
   const groups = [];
   for (let end = clean.length; end > 0; end -= 3) {
     const start = Math.max(0, end - 3);
@@ -669,13 +740,27 @@ export function readAmountInVietnameseWords(amount) {
     return '';
   }
 
-  const absRounded = Math.round((Math.abs(num) + Number.EPSILON) * 100) / 100;
-  if (absRounded === 0) {
+  if (num === 0) {
     return 'Không đồng';
   }
 
-  const [intStr, rawFrac] = absRounded.toFixed(2).split('.');
-  const cleanFrac = rawFrac.replace(/0+$/, '');
+  let intStr = '';
+  let cleanFrac = '';
+
+  // Exact fast-path for safe integers (prevents IEEE-754 * 100 precision loss on large integers)
+  if (Number.isSafeInteger(num)) {
+    intStr = String(Math.abs(num));
+  } else {
+    const absVal = Math.abs(num);
+    const absRounded =
+      absVal <= 9e13 ? Math.round((absVal + Number.EPSILON) * 100) / 100 : absVal;
+    if (absRounded === 0) {
+      return 'Không đồng';
+    }
+    const parts = absRounded.toFixed(2).split('.');
+    intStr = parts[0];
+    cleanFrac = parts[1].replace(/0+$/, '');
+  }
 
   const words = [];
   if (num < 0) {

@@ -16,13 +16,28 @@ if (typeof XLSX.set_cptable === 'function') {
 }
 
 /**
- * Normalizes Vietnamese text for accent-insensitive header & summary keyword matching.
+ * Cleans IEEE-754 floating-point dust while preserving full safe-integer precision
+ * and up to 6 decimal places for fractional FX/VAT amounts.
+ * @param {number} val
+ * @returns {number}
+ */
+function cleanMoneyMath(val) {
+  if (!Number.isFinite(val) || val === 0) return 0;
+  if (Number.isInteger(val)) return val;
+  return Math.abs(val) <= 9e9 ? Math.round(val * 1e6) / 1e6 : Math.round(val * 100) / 100;
+}
+
+/**
+ * Normalizes Vietnamese text for accent-insensitive header keyword matching.
+ * Handles both NFC and Unikey NFD / combining stroke D (`D\u0335`).
  * @param {unknown} input
  * @returns {string}
  */
 function normalizeText(input) {
   if (input === null || input === undefined) return '';
   return String(input)
+    .replace(/[dD]\u0335/g, 'd')
+    .normalize('NFC')
     .toLowerCase()
     .replace(/đ/g, 'd')
     .normalize('NFD')
@@ -32,7 +47,7 @@ function normalizeText(input) {
 }
 
 /**
- * Formats any raw cell value into a clean string for display/preview.
+ * Formats any raw cell value into a clean NFC-normalized string for display/preview.
  * @param {unknown} cell
  * @returns {string}
  */
@@ -41,6 +56,8 @@ function cellToCleanString(cell) {
   if (cell instanceof Date) return formatDateVN(cell);
   if (typeof cell === 'boolean') return cell ? 'TRUE' : 'FALSE';
   return String(cell)
+    .replace(/[dD]\u0335/g, (m) => (m[0] === 'D' ? 'Đ' : 'đ'))
+    .normalize('NFC')
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -64,7 +81,6 @@ function isColumnIndexHelperRow(row) {
 
   let shortTokenCount = 0;
   for (const token of nonEmpty) {
-    // Reject if any cell is a real date string
     if (typeof token === 'string' && token.length >= 6 && parseVietnameseDate(token)) {
       return false;
     }
@@ -82,8 +98,9 @@ function isColumnIndexHelperRow(row) {
  * @returns {{ score: number, category: string | null }}
  */
 function scoreHeaderCellKeyword(rawText) {
-  const lower = rawText.toLowerCase().trim();
-  const norm = normalizeText(rawText);
+  const nfcText = cellToCleanString(rawText);
+  const lower = nfcText.toLowerCase();
+  const norm = normalizeText(nfcText);
   if (!norm || norm.length > 80) return { score: 0, category: null };
 
   // Date keywords
@@ -152,6 +169,9 @@ function isLikelyParentHeaderRow(row) {
 
 /**
  * Auto-detects the 0-based header row index within the first 25 rows of a sheet grid.
+ * Properly handles 2-row merged headers (MISA / Thông tư 200 / 133) where parent columns
+ * merge vertically and `Số phát sinh` splits horizontally into `Nợ | Có` on the child row.
+ *
  * @param {any[][]} grid
  * @returns {number}
  */
@@ -206,48 +226,64 @@ function detectHeaderRowIndex(grid) {
 
     if (nonEmptyCount === 0) continue;
 
+    const isHelperRow = isColumnIndexHelperRow(row);
+    const hasParentHeader =
+      r > 0 &&
+      textCount >= 2 &&
+      dataLikeCells === 0 &&
+      !isHelperRow &&
+      isLikelyParentHeaderRow(grid[r - 1]);
+
     let score = 0;
 
-    // Penalize single-cell title/banner rows (company name, report title, date range subtitle)
+    // Penalize single-cell title/banner rows (do NOT penalize 2-cell Nợ|Có child subheaders!)
     if (nonEmptyCount === 1) {
       score -= 45;
-    } else if (nonEmptyCount === 2) {
+    } else if (nonEmptyCount === 2 && !hasParentHeader) {
       score -= 8;
     }
 
-    if (isColumnIndexHelperRow(row)) {
+    if (isHelperRow) {
       score -= 70;
+    }
+
+    // 2-row merged header inheritance BEFORE computing category & keyword totals
+    if (hasParentHeader) {
+      const parentRow = grid[r - 1];
+      const colLimit = Math.max(parentRow.length, row.length);
+      let splitsMergedGroup = false;
+
+      for (let c = 0; c < colLimit; c++) {
+        const childStr = cellToCleanString(row[c]);
+        const parentStr = cellToCleanString(parentRow[c]);
+
+        if (!childStr && parentStr) {
+          seenTexts.add(parentStr.toLowerCase());
+          const kw = scoreHeaderCellKeyword(parentStr);
+          if (kw.score > 0) {
+            keywordScore += Math.min(kw.score, 15);
+            if (kw.category) categories.add(kw.category);
+          }
+        } else if (childStr && !parentStr) {
+          splitsMergedGroup = true;
+        }
+      }
+
+      // Prefer the bottom sub-header row (immediately above data) when it refines parent groups
+      score += splitsMergedGroup ? 24 : 12;
     }
 
     // Reward distinct text headers & keyword coverage
     score += Math.min(seenTexts.size, 10) * 3.5;
     if (textCount > 0) {
-      score += (seenTexts.size / textCount) * 8;
+      score += (Math.min(seenTexts.size, Math.max(textCount, seenTexts.size)) / Math.max(seenTexts.size, 1)) * 8;
     }
-    score += Math.min(keywordScore, 75);
+    score += Math.min(keywordScore, 85);
     score += categories.size * 12;
 
     // Penalize rows that already contain dates/numbers (likely data rows) or long notes
     score -= dataLikeCells * 10;
     score -= longParagraphCells * 15;
-
-    // 2-row merged header awareness: inherit parent header categories from r - 1
-    if (r > 0 && textCount >= 2 && dataLikeCells === 0 && isLikelyParentHeaderRow(grid[r - 1])) {
-      const parentRow = grid[r - 1];
-      for (let c = 0; c < parentRow.length; c++) {
-        const childStr = cellToCleanString(row[c]);
-        const parentStr = cellToCleanString(parentRow[c]);
-        if (!childStr && parentStr) {
-          const kw = scoreHeaderCellKeyword(parentStr);
-          if (kw.score > 0) {
-            score += kw.score * 0.8;
-            if (kw.category) categories.add(kw.category);
-          }
-        }
-      }
-      // Slight preference for bottom sub-header row (immediately above data)
-      score += 8;
-    }
 
     // Lookahead: inspect up to 5 non-empty rows below `r` for real dates & amounts
     let inspectedBelow = 0;
@@ -267,7 +303,6 @@ function detectHeaderRowIndex(grid) {
       let rowHasDate = false;
       for (const cell of nextRow) {
         if (!rowHasDate && cell !== '' && cell !== null && cell !== undefined) {
-          // For strings, check date directly; for numbers, check typical serial window
           if (typeof cell === 'string' && parseVietnameseDate(cell) !== null) {
             rowHasDate = true;
           } else if (typeof cell === 'number' && cell >= 32874 && cell <= 55000 && cell % 100 !== 0) {
@@ -275,7 +310,6 @@ function detectHeaderRowIndex(grid) {
           }
         }
         if (!rowHasAmount && parseVietnameseAmount(cell) !== null) {
-          // Exclude strings that are dates
           if (typeof cell === 'number' || parseVietnameseDate(cell) === null) {
             rowHasAmount = true;
           }
@@ -361,11 +395,11 @@ function buildColumnsMetadata(grid, headerRowIndex) {
       parentLabel.toLowerCase() !== label.toLowerCase() &&
       !label.toLowerCase().includes(parentLabel.toLowerCase())
     ) {
-      // Prefix short ambiguous subheaders like "Nợ", "Có", "Số hiệu", "Ngày tháng" with parent group
+      const childLower = label.toLowerCase();
       const childNorm = normalizeText(label);
       if (
-        label.toLowerCase() === 'nợ' ||
-        label.toLowerCase() === 'có' ||
+        childLower === 'nợ' ||
+        childLower === 'có' ||
         /^(so hieu|so|ngay thang|ngay|vnd|nguyen te)$/.test(childNorm)
       ) {
         label = `${parentLabel} - ${label}`;
@@ -406,15 +440,6 @@ function buildColumnsMetadata(grid, headerRowIndex) {
  * @param {any[][]} grid
  * @param {number} headerRowIndex
  * @param {Array<{ index: number, excelCol: string, label: string, sampleValues: string[] }>} columns
- * @returns {{
- *   dateColIndex: number | null,
- *   amountColIndex: number | null,
- *   debitColIndex: number | null,
- *   creditColIndex: number | null,
- *   amountMode: 'single' | 'debit_minus_credit',
- *   descColIndex: number | null,
- *   refColIndex: number | null
- * }}
  */
 function inferSuggestedMapping(grid, headerRowIndex, columns) {
   const emptyMapping = {
@@ -429,7 +454,6 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
 
   if (columns.length === 0) return emptyMapping;
 
-  // Collect up to 50 non-summary data rows for statistical profiling
   const sampleRows = [];
   for (let r = headerRowIndex + 1; r < grid.length && sampleRows.length < 50; r++) {
     const row = grid[r];
@@ -441,8 +465,9 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
   }
 
   const profiles = columns.map((col) => {
-    const lower = col.label.toLowerCase().trim();
-    const norm = normalizeText(col.label);
+    const nfcLabel = cellToCleanString(col.label);
+    const lower = nfcLabel.toLowerCase();
+    const norm = normalizeText(nfcLabel);
 
     let nonEmpty = 0;
     let stringDateCount = 0;
@@ -498,7 +523,10 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
     const avgTextLen = textCount > 0 ? totalTextLen / textCount : 0;
     const isLikelySttData = nonEmpty >= 3 && sequentialIndexMatches / denom >= 0.8;
 
-    const isSttHeader = /^(stt|so thu tu|thu tu|tt|no)$/.test(norm);
+    // Never treat Vietnamese "Nợ" as English "No." (STT)!
+    const isVietnameseDebitWord = lower === 'nợ' || /(?:^|[\s-])nợ$/.test(lower);
+    const isSttHeader =
+      !isVietnameseDebitWord && /^(stt|so thu tu|thu tu|tt|no)$/.test(norm);
     const isAccountCodeHeader =
       /\b(tk|tai khoan|dinh khoan|tk doi ung|ma tk|debit account|credit account)\b/.test(norm) &&
       !/\b(so tien|phat sinh|so du)\b/.test(norm);
@@ -545,8 +573,7 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
       (/\b(phat sinh no|ps no|so phat sinh no|ghi no|so tien ghi no|tien ra|chi ra|thuc chi|debit|withdrawal)\b/.test(
         norm
       ) ||
-        lower === 'nợ' ||
-        /(?:^|[\s-])nợ$/.test(lower));
+        isVietnameseDebitWord);
 
     const isPureCreditHeader =
       !isAccountCodeHeader &&
@@ -687,7 +714,7 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
   const bestDebit = pickBest('debitScore', 40);
   if (bestDebit.index !== null) usedCols.add(bestDebit.index);
   const bestCredit = pickBest('creditScore', 40);
-  if (bestDebit.index !== null) usedCols.delete(bestDebit.index); // release temporarily until mode chosen
+  if (bestDebit.index !== null) usedCols.delete(bestDebit.index);
 
   const bestSingle = pickBest('singleAmountScore', 12);
 
@@ -744,8 +771,9 @@ function inferSuggestedMapping(grid, headerRowIndex, columns) {
 
 /**
  * Detects whether a row is an accounting summary/total/balance row ("Tổng cộng", "Cộng phát sinh",
- * "Số dư cuối kỳ", "Số dư đầu kỳ", "Subtotal", "Total", or blank date + "Cộng").
- * Avoids false positives on normal transactions like "Tổng công ty" or "Cộng tác viên".
+ * "Cộng tháng...", "Số dư cuối kỳ", "Số dư đầu kỳ", "Subtotal", "Total", or blank date + "Cộng").
+ * Strictly preserves Vietnamese diacritics (`cộng` vs `công`) so real business rows containing
+ * "Tổng công ty", "Tổng công trình", "Tổng công nghiệp", or "Công lắp đặt" are NEVER misflagged.
  *
  * @param {any[]} row
  * @param {number | null} dateColIndex
@@ -765,39 +793,62 @@ function detectSummaryRowInternal(row, dateColIndex, descColIndex) {
     if (typeof raw !== 'string') continue;
     const clean = cellToCleanString(raw);
     if (!clean) continue;
+
+    const lower = clean.toLowerCase();
+    const lowerCore = lower.replace(/^[\s:.,;()\-]+|[\s:.,;()\-]+$/g, '');
     const norm = normalizeText(clean);
     if (!norm) continue;
 
-    // Unconditional accounting summary phrases (note negative lookahead excluding "tong cong ty")
+    const hasNonAscii = /[^\u0000-\u007f]/.test(lower);
+
+    // 1. Unconditional summary phrases (apply even if date cell has a month-end/opening date)
     if (
-      /\btong cong(?!\s+ty\b)\b/.test(norm) ||
-      /\b(cong phat sinh|tong phat sinh|cong ps|tong ps|so du cuoi ky|so du dau ky|du cuoi ky|du dau ky|so du mang sang|cong chuyen sang|cong luy ke|grand total|subtotal|sub total)\b/.test(
-        norm
-      ) ||
-      /^(tong|cong|tong so|tong ket|total|totals)$/.test(norm)
+      /^(tổng cộng|tổng|cộng|tổng số|tổng kết|số dư|total|totals|subtotal|sub-total|sub total|grand total)$/.test(
+        lowerCore
+      )
     ) {
       return { isSummary: true, matchedLabel: clean };
     }
 
-    // Conditional summary rule when date column is blank/invalid
-    if (!hasValidDate) {
+    if (
+      /(?:^|[\s(:,;-])(tổng\s+cộng|cộng\s+phát\s+sinh|tổng\s+phát\s+sinh|cộng\s+ps|tổng\s+ps|cộng\s+lũy\s+kế|tổng\s+lũy\s+kế|cộng\s+chuyển\s+sang|số\s+dư\s+đầu\s+kỳ|số\s+dư\s+cuối\s+kỳ|dư\s+đầu\s+kỳ|dư\s+cuối\s+kỳ|số\s+dư\s+mang\s+sang|cộng\s+tháng|tổng\s+tháng|cộng\s+quý|tổng\s+quý|cộng\s+năm|tổng\s+năm|cộng\s+kỳ|tổng\s+kỳ|cộng\s+nhóm|cộng\s+tiểu\s+khoản)(?=$|[\s):,;/.-])/.test(
+        lower
+      )
+    ) {
+      return { isSummary: true, matchedLabel: clean };
+    }
+
+    if (
+      /\b(grand total|subtotal|sub total|opening balance|closing balance|brought forward|carried forward)\b/.test(
+        norm
+      )
+    ) {
+      return { isSummary: true, matchedLabel: clean };
+    }
+
+    // Fallback for purely ASCII unaccented Vietnamese exports (never triggers when diacritics exist)
+    if (!hasNonAscii) {
       if (
-        /^cong(?!\s+(?:ty|tac|dong|hoa)\b)\b/.test(norm) ||
-        /^tong(?!\s+(?:cong\s+ty|giam\s+doc|dai)\b)\b/.test(norm) ||
-        /^total\b/.test(norm) ||
-        /^so du\b/.test(norm)
+        /\btong cong(?!\s+(?:ty|trinh|nghiep|tac|dong|hoa|no|viec|chuc|thuong)\b)\b/.test(norm) ||
+        /\b(cong phat sinh|tong phat sinh|so du dau ky|so du cuoi ky|cong luy ke|cong thang|tong thang|cong quy|cong nam)\b/.test(
+          norm
+        )
       ) {
         return { isSummary: true, matchedLabel: clean };
       }
     }
-  }
 
-  // Extra check specifically on descColIndex if date is empty and description says "Cộng"
-  if (!hasValidDate && descColIndex !== null && descColIndex !== undefined) {
-    const descClean = cellToCleanString(row[descColIndex]);
-    const descNorm = normalizeText(descClean);
-    if (/^(cong|tong)\b/.test(descNorm) && !/^cong\s+(?:ty|tac|dong|hoa)\b/.test(descNorm)) {
-      return { isSummary: true, matchedLabel: descClean };
+    // 2. Conditional summary rule when date column is blank/invalid (e.g. blank date + "Cộng:")
+    if (!hasValidDate) {
+      if (
+        (/^cộng(?=$|[\s:,;()/.-])/.test(lower) &&
+          !/^cộng\s+(đồng|tác|hòa|hoà|hưởng|thêm)\b/.test(lower)) ||
+        /^(tổng\s+số|tổng\s+kết|số\s+dư)(?=$|[\s:,;()/.-])/.test(lower) ||
+        /^total(?=$|[\s:,;()/.-])/.test(lower) ||
+        (!hasNonAscii && /^so du\b/.test(norm))
+      ) {
+        return { isSummary: true, matchedLabel: clean };
+      }
     }
   }
 
@@ -854,8 +905,7 @@ export function getSheetNames(workbook) {
 
 /**
  * Extracts a 0-based 2D `rawGrid` from a SheetJS worksheet while preserving exact
- * 1-based Excel row numbers and column indices (even if top rows or Column A are blank),
- * without allocating millions of empty rows when Excel formatted whole columns.
+ * 1-based Excel row numbers and column indices.
  *
  * @param {any} worksheet
  * @returns {any[][]}
@@ -881,7 +931,7 @@ function worksheetToExactGrid(worksheet) {
     }
   } else {
     for (const key of Object.keys(worksheet)) {
-      if (key.charCodeAt(0) === 33) continue; // skip '!' metadata keys
+      if (key.charCodeAt(0) === 33) continue;
       const cell = worksheet[key];
       if (!cell || (cell.v === undefined && cell.w === undefined) || cell.v === '') continue;
       const addr = XLSX.utils.decode_cell(key);
@@ -1011,7 +1061,6 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
     mapping?.amountMode === 'debit_minus_credit' ||
     (amountColIndex === null && (debitColIndex !== null || creditColIndex !== null));
 
-  // Precompute extra column descriptors (columns not directly mapped)
   const mappedIndices = new Set();
   if (dateColIndex !== null) mappedIndices.add(dateColIndex);
   if (useDebitCredit) {
@@ -1031,7 +1080,7 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
   const seenLabels = new Set();
   for (const col of resolvedCols) {
     if (mappedIndices.has(col.index)) continue;
-    let key = col.label || `Cột ${col.excelCol || XLSX.utils.encode_col(col.index)}`;
+    let key = cellToCleanString(col.label) || `Cột ${col.excelCol || XLSX.utils.encode_col(col.index)}`;
     if (seenLabels.has(key)) {
       key = `${key} (${col.excelCol || XLSX.utils.encode_col(col.index)})`;
     }
@@ -1053,7 +1102,6 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
       continue;
     }
 
-    // Check completely blank row
     let hasAnyNonEmpty = false;
     for (let c = 0; c < row.length; c++) {
       if (cellToCleanString(row[c]) !== '') {
@@ -1066,23 +1114,24 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
       continue;
     }
 
-    // Skip accounting column-numbering row (e.g. A | B | C | 1 | 2) right under header
     if (rowIndex <= startRow + 1 && isColumnIndexHelperRow(row)) {
       skippedEmptyOrInvalidCount++;
       continue;
     }
 
-    // Parse transaction amount
     let amount = null;
+    let debitVal = null;
+    let creditVal = null;
+
     if (useDebitCredit) {
-      const debitVal = debitColIndex !== null ? parseVietnameseAmount(row[debitColIndex]) : null;
-      const creditVal = creditColIndex !== null ? parseVietnameseAmount(row[creditColIndex]) : null;
+      debitVal = debitColIndex !== null ? parseVietnameseAmount(row[debitColIndex]) : null;
+      creditVal = creditColIndex !== null ? parseVietnameseAmount(row[creditColIndex]) : null;
       if (debitVal === null && creditVal === null) {
         skippedEmptyOrInvalidCount++;
         continue;
       }
       const rawDiff = (debitVal ?? 0) - (creditVal ?? 0);
-      amount = Math.round((rawDiff + Number.EPSILON) * 100) / 100;
+      amount = cleanMoneyMath(rawDiff);
     } else {
       if (amountColIndex === null) {
         skippedEmptyOrInvalidCount++;
@@ -1095,7 +1144,7 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
       }
     }
 
-    if (amount === 0) amount = 0; // normalize -0
+    if (amount === 0) amount = 0;
 
     const parsedDate = dateColIndex !== null ? parseVietnameseDate(row[dateColIndex]) : null;
     let description = descColIndex !== null ? cellToCleanString(row[descColIndex]) : '';
@@ -1105,6 +1154,12 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
     const isSummaryRow = summaryInfo.isSummary;
     if (isSummaryRow && !description && summaryInfo.matchedLabel) {
       description = summaryInfo.matchedLabel;
+    }
+
+    // In debit_minus_credit mode, skip non-summary rows where neither Debit nor Credit has movement (0 / 0)
+    if (useDebitCredit && !isSummaryRow && (debitVal ?? 0) === 0 && (creditVal ?? 0) === 0) {
+      skippedEmptyOrInvalidCount++;
+      continue;
     }
 
     // Skip zero-amount formula placeholder rows that have no date, description, or reference
@@ -1145,7 +1200,7 @@ export function extractTransactions(rawGrid, headerRowIndex, mapping, columns = 
       if (minDateIso === null || dateIso < minDateIso) minDateIso = dateIso;
       if (maxDateIso === null || dateIso > maxDateIso) maxDateIso = dateIso;
 
-      const monthKey = dateIso.slice(0, 7); // "YYYY-MM"
+      const monthKey = dateIso.slice(0, 7);
       let bucket = monthBuckets.get(monthKey);
       if (!bucket) {
         const [yyyyStr, mmStr] = monthKey.split('-');
@@ -1205,7 +1260,6 @@ function computeAutoColumnWidths(aoa, minWidths = [], maxWidth = 52) {
       if (val === null || val === undefined || val === '') continue;
       let len = 0;
       if (typeof val === 'number') {
-        // Approximate formatted length with thousand separators
         len = Math.abs(val).toLocaleString('en-US').length + (val < 0 ? 2 : 1);
       } else {
         len = String(val).length;
@@ -1240,13 +1294,30 @@ function applyNumericFormatToColumns(ws, startRowIdx, endRowIdx, numericColIndic
 }
 
 /**
- * Normalizes a batch entry from `reconciledBatches` regardless of minor UI property variations.
+ * Converts a value to a finite number ONLY when it is not null, undefined, '', or boolean
+ * (prevents the `Number(null) === 0` and `Number('') === 0` coercion traps).
+ *
+ * @param {unknown} val
+ * @returns {number | null}
+ */
+function toFiniteNumberOrNull(val) {
+  if (val === null || val === undefined || val === '' || typeof val === 'boolean') {
+    return null;
+  }
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Normalizes a batch entry from `reconciledBatches`, deduplicating item IDs across all batches
+ * so Sheet 1 and Sheet 2 always reconcile 100% identically.
  *
  * @param {any} batch
  * @param {number} idx
  * @param {Map<string, any>} itemsById
+ * @param {Set<any>} claimedItemIds
  */
-function normalizeBatchEntry(batch, idx, itemsById) {
+function normalizeBatchEntry(batch, idx, itemsById, claimedItemIds) {
   const defaultCode = `DOT-${String(idx + 1).padStart(2, '0')}`;
   const rawCode =
     batch?.code ||
@@ -1254,50 +1325,61 @@ function normalizeBatchEntry(batch, idx, itemsById) {
     batch?.name ||
     batch?.label ||
     (typeof batch?.id === 'string' && batch.id.length <= 20 ? batch.id : defaultCode);
-  const code = String(rawCode).trim() || defaultCode;
+  const code = cellToCleanString(rawCode) || defaultCode;
 
-  let resolvedItems = [];
+  let candidateItems = [];
   if (Array.isArray(batch?.items) && batch.items.length > 0) {
-    resolvedItems = batch.items.map((it) => (typeof it === 'string' ? itemsById.get(it) : it)).filter(Boolean);
+    candidateItems = batch.items
+      .map((it) => (typeof it === 'string' ? itemsById.get(it) : it))
+      .filter(Boolean);
   } else if (Array.isArray(batch?.solution?.items) && batch.solution.items.length > 0) {
-    resolvedItems = batch.solution.items
+    candidateItems = batch.solution.items
       .map((it) => (typeof it === 'string' ? itemsById.get(it) : it))
       .filter(Boolean);
   } else {
     const rawIds = batch?.itemIds || batch?.solution?.itemIds || [];
     if (Array.isArray(rawIds)) {
-      resolvedItems = rawIds.map((id) => itemsById.get(id)).filter(Boolean);
+      candidateItems = rawIds.map((id) => itemsById.get(id)).filter(Boolean);
     }
   }
 
-  const computedTotal =
-    Math.round(
-      (resolvedItems.reduce((acc, it) => acc + (Number(it?.amount) || 0), 0) + Number.EPSILON) * 100
-    ) / 100;
+  const resolvedItems = [];
+  let hadDuplicateRemoved = false;
+  for (const it of candidateItems) {
+    const key = it?.id !== undefined ? it.id : it;
+    if (claimedItemIds.has(key)) {
+      hadDuplicateRemoved = true;
+      continue;
+    }
+    claimedItemIds.add(key);
+    resolvedItems.push(it);
+  }
 
-  const totalAmount = Number.isFinite(Number(batch?.totalAmount))
-    ? Number(batch.totalAmount)
-    : Number.isFinite(Number(batch?.solution?.totalAmount))
-      ? Number(batch.solution.totalAmount)
-      : computedTotal;
+  const computedTotal = cleanMoneyMath(
+    resolvedItems.reduce((acc, it) => acc + (Number(it?.amount) || 0), 0)
+  );
 
-  const targetAmount = Number.isFinite(Number(batch?.targetAmount))
-    ? Number(batch.targetAmount)
-    : Number.isFinite(Number(batch?.target))
-      ? Number(batch.target)
-      : Number.isFinite(Number(batch?.solution?.targetAmount))
-        ? Number(batch.solution.targetAmount)
-        : totalAmount;
+  const explicitTotal =
+    toFiniteNumberOrNull(batch?.totalAmount) ??
+    toFiniteNumberOrNull(batch?.solution?.totalAmount);
+  const totalAmount =
+    hadDuplicateRemoved || explicitTotal === null ? computedTotal : explicitTotal;
 
-  const diff = Number.isFinite(Number(batch?.diff))
-    ? Number(batch.diff)
-    : Number.isFinite(Number(batch?.solution?.diff))
-      ? Number(batch.solution.diff)
-      : Math.round((totalAmount - targetAmount + Number.EPSILON) * 100) / 100;
+  const explicitTarget =
+    toFiniteNumberOrNull(batch?.targetAmount) ??
+    toFiniteNumberOrNull(batch?.target) ??
+    toFiniteNumberOrNull(batch?.solution?.targetAmount);
+  const targetAmount = explicitTarget !== null ? explicitTarget : totalAmount;
+
+  const explicitDiff =
+    toFiniteNumberOrNull(batch?.diff) ?? toFiniteNumberOrNull(batch?.solution?.diff);
+  const diff =
+    hadDuplicateRemoved || explicitDiff === null
+      ? cleanMoneyMath(totalAmount - targetAmount)
+      : explicitDiff;
 
   const note = cellToCleanString(batch?.note ?? batch?.notes ?? batch?.keyword ?? '');
 
-  // Date range summary of items in batch
   let minIso = null;
   let maxIso = null;
   for (const it of resolvedItems) {
@@ -1356,9 +1438,11 @@ export function exportReconciledWorkbook({
     }
   }
 
-  const normalizedBatches = safeBatches.map((b, idx) => normalizeBatchEntry(b, idx, itemsById));
+  const claimedItemIds = new Set();
+  const normalizedBatches = safeBatches.map((b, idx) =>
+    normalizeBatchEntry(b, idx, itemsById, claimedItemIds)
+  );
 
-  // Map each reconciled item ID -> its batch metadata
   const batchByItemId = new Map();
   for (const b of normalizedBatches) {
     for (const it of b.items) {
@@ -1368,7 +1452,6 @@ export function exportReconciledWorkbook({
     }
   }
 
-  // Collect extra original column keys in stable order
   const extraColKeys = [];
   const seenExtraKeys = new Set();
   for (const item of safeItems) {
@@ -1382,7 +1465,6 @@ export function exportReconciledWorkbook({
     }
   }
 
-  // Fallback to `columns` + `rawCells` if synthetic items didn't populate `extraCells`
   const useRawColumnsFallback =
     extraColKeys.length === 0 && Array.isArray(columns) && columns.length > 0;
   const fallbackCols = useRawColumnsFallback ? columns : [];
@@ -1401,7 +1483,7 @@ export function exportReconciledWorkbook({
     'Mục tiêu đợt',
     'Chênh lệch đợt',
     ...(useRawColumnsFallback
-      ? fallbackCols.map((c) => c.label || `Cột ${c.excelCol || c.index + 1}`)
+      ? fallbackCols.map((c) => cellToCleanString(c.label) || `Cột ${c.excelCol || c.index + 1}`)
       : extraColKeys),
   ];
 
@@ -1455,16 +1537,9 @@ export function exportReconciledWorkbook({
   // SHEET 2: Tong_Hop_Cac_Dot_Gom
   // ==========================================================================
   const totalReconciledItems = normalizedBatches.reduce((s, b) => s + b.itemCount, 0);
-  const sumTarget =
-    Math.round(
-      (normalizedBatches.reduce((s, b) => s + b.targetAmount, 0) + Number.EPSILON) * 100
-    ) / 100;
-  const sumActual =
-    Math.round(
-      (normalizedBatches.reduce((s, b) => s + b.totalAmount, 0) + Number.EPSILON) * 100
-    ) / 100;
-  const sumDiff =
-    Math.round((normalizedBatches.reduce((s, b) => s + b.diff, 0) + Number.EPSILON) * 100) / 100;
+  const sumTarget = cleanMoneyMath(normalizedBatches.reduce((s, b) => s + b.targetAmount, 0));
+  const sumActual = cleanMoneyMath(normalizedBatches.reduce((s, b) => s + b.totalAmount, 0));
+  const sumDiff = cleanMoneyMath(normalizedBatches.reduce((s, b) => s + b.diff, 0));
 
   const sheet2Aoa = [
     [`BÁO CÁO TỔNG HỢP CÁC ĐỢT GOM ĐỐI SOÁT - SHEET: ${sheetName || 'Sheet1'}`],

@@ -727,6 +727,38 @@ function readMappingFromControls() {
   state.includeSummaryRows = Boolean(dom.includeSummaryCheckbox.checked);
 }
 
+function hasAmountMappingChanged(prev, next) {
+  if (!prev || !next) return false;
+  if (prev.amountMode !== next.amountMode) return true;
+  if (next.amountMode === 'debit_minus_credit') {
+    return (
+      prev.debitColIndex !== next.debitColIndex ||
+      prev.creditColIndex !== next.creditColIndex
+    );
+  }
+  return prev.amountColIndex !== next.amountColIndex;
+}
+
+function clearBatchesAndResultsOnStructuralChange(reasonMessage = '') {
+  const hadBatches = state.reconciledBatches.length > 0;
+  cancelRunningSearch(true);
+  state.reconciledBatches = [];
+  state.reconciledMap.clear();
+  state.nextBatchSeq = 1;
+  state.searchResult = null;
+  state.lastSearchContext = null;
+  state.expandedSolutionIds.clear();
+  state.solutionDraftNotes.clear();
+  state.inspectedIds.clear();
+  state.inspectLabel = '';
+  if (state.ledgerView === 'inspect') {
+    state.ledgerView = 'filtered';
+  }
+  if (hadBatches && reasonMessage) {
+    showToast(reasonMessage, 'info');
+  }
+}
+
 function runDataExtraction(resetDates = false) {
   if (!state.inspection) return;
 
@@ -743,6 +775,10 @@ function runDataExtraction(resetDates = false) {
     state.itemById.clear();
     state.summaryRowCount = 0;
     state.availableMonths = [];
+    state.pinnedIds.clear();
+    state.manualExcludedIds.clear();
+    state.checkedIds.clear();
+    clearBatchesAndResultsOnStructuralChange();
     dom.extractSummaryText.textContent =
       'Chưa chọn cột Số tiền - Vui lòng chọn cột Số tiền ở khung thiết lập bên dưới.';
     renderMonthQuickButtons();
@@ -777,7 +813,7 @@ function runDataExtraction(resetDates = false) {
       state.summaryRowCount
     )} dòng tổng cộng)`;
 
-    // Dọn các ID ghim / tích chọn không còn tồn tại nếu đổi cột
+    // Dọn các ID ghim / tích chọn không còn hợp lệ (bao gồm dòng Tổng cộng khi tắt includeSummaryRows)
     cleanupOrphanRowSelections();
 
     if (resetDates) {
@@ -806,17 +842,46 @@ function runDataExtraction(resetDates = false) {
 }
 
 function cleanupOrphanRowSelections() {
+  const isRowSelectableNow = (id) => {
+    const item = state.itemById.get(id);
+    if (!item) return false;
+    if (!state.includeSummaryRows && item.isSummaryRow) return false;
+    return true;
+  };
+
   for (const id of Array.from(state.pinnedIds)) {
-    if (!state.itemById.has(id)) state.pinnedIds.delete(id);
+    if (!isRowSelectableNow(id)) state.pinnedIds.delete(id);
   }
   for (const id of Array.from(state.manualExcludedIds)) {
-    if (!state.itemById.has(id)) state.manualExcludedIds.delete(id);
+    if (!isRowSelectableNow(id)) state.manualExcludedIds.delete(id);
   }
   for (const id of Array.from(state.checkedIds)) {
-    if (!state.itemById.has(id)) state.checkedIds.delete(id);
+    if (!isRowSelectableNow(id)) state.checkedIds.delete(id);
   }
   for (const id of Array.from(state.inspectedIds)) {
     if (!state.itemById.has(id)) state.inspectedIds.delete(id);
+  }
+
+  // Đồng bộ tham chiếu các đợt đã đối soát với danh sách items vừa trích xuất lại
+  if (state.reconciledBatches.length > 0) {
+    const validBatches = [];
+    state.reconciledMap.clear();
+
+    for (const batch of state.reconciledBatches) {
+      const freshItems = (batch.itemIds || [])
+        .map((id) => state.itemById.get(id))
+        .filter((it) => Boolean(it) && (state.includeSummaryRows || !it.isSummaryRow));
+
+      if (freshItems.length > 0 && freshItems.length === batch.itemIds.length) {
+        batch.items = freshItems;
+        validBatches.push(batch);
+        for (const it of freshItems) {
+          state.reconciledMap.set(it.id, batch);
+        }
+      }
+    }
+
+    state.reconciledBatches = validBatches;
   }
 }
 
@@ -1040,6 +1105,15 @@ function syncToleranceQuickChips() {
 /* ==========================================================================
    KIỂM TRA DÒNG PHÙ HỢP BỘ LỌC (DÙNG CHO PREVIEW & SỔ CHI TIẾT)
    ========================================================================== */
+function isFullSheetDateRangeSelected() {
+  if (state.activeMonthKey === 'all') return true;
+  const coversMin =
+    !state.dateFromIso || !state.minDateIso || state.dateFromIso <= state.minDateIso;
+  const coversMax =
+    !state.dateToIso || !state.maxDateIso || state.dateToIso >= state.maxDateIso;
+  return coversMin && coversMax;
+}
+
 function doesItemMatchStep2Filter(item) {
   if (!state.includeSummaryRows && item.isSummaryRow) {
     return false;
@@ -1050,10 +1124,13 @@ function doesItemMatchStep2Filter(item) {
 
   if (fromTs !== null || toTs !== null) {
     if (item.timestamp === null || item.timestamp === undefined) {
-      return false;
+      if (!isFullSheetDateRangeSelected()) {
+        return false;
+      }
+    } else {
+      if (fromTs !== null && item.timestamp < fromTs) return false;
+      if (toTs !== null && item.timestamp > toTs) return false;
     }
-    if (fromTs !== null && item.timestamp < fromTs) return false;
-    if (toTs !== null && item.timestamp > toTs) return false;
   }
 
   const normKw = normalizeVietnameseSearch(state.keyword || '');
@@ -1076,6 +1153,7 @@ function updateCandidatePreviewAndLedger() {
   for (const item of state.items) {
     if (state.reconciledMap.has(item.id)) continue;
     if (state.manualExcludedIds.has(item.id)) continue;
+    if (!state.includeSummaryRows && item.isSummaryRow) continue;
     if (state.pinnedIds.has(item.id) || doesItemMatchStep2Filter(item)) {
       eligibleCount++;
     }
@@ -1201,26 +1279,34 @@ function executeSearch() {
     dom.dateFromInput.value = state.dateFromIso;
     dom.dateToInput.value = state.dateToIso;
     syncDateReadoutsAndMonthHighlight();
+    state.ledgerPage = 1;
+    updateCandidatePreviewAndLedger();
     showToast('Đã tự động đảo lại thứ tự Từ ngày trước Đến ngày.');
   }
+
+  const safePinnedIds = Array.from(state.pinnedIds).filter((id) => {
+    const it = state.itemById.get(id);
+    return Boolean(it) && (state.includeSummaryRows || !it.isSummaryRow);
+  });
 
   // Tập hợp danh sách loại trừ = Loại trừ thủ công + Các dòng đã gom ở các đợt trước
   const excludedSet = new Set(state.manualExcludedIds);
   for (const recId of state.reconciledMap.keys()) {
     excludedSet.add(recId);
   }
-  for (const pinId of state.pinnedIds) {
+  for (const pinId of safePinnedIds) {
     excludedSet.delete(pinId);
   }
 
+  const isFullRange = isFullSheetDateRangeSelected();
   const options = {
     items: state.items,
-    dateFromIso: state.dateFromIso || null,
-    dateToIso: state.dateToIso || null,
+    dateFromIso: isFullRange ? null : state.dateFromIso || null,
+    dateToIso: isFullRange ? null : state.dateToIso || null,
     keyword: (state.keyword || '').trim(),
     targetAmount: state.targetAmount,
     tolerance: state.tolerance,
-    pinnedIds: Array.from(state.pinnedIds),
+    pinnedIds: safePinnedIds,
     excludedIds: Array.from(excludedSet),
     includeSummaryRows: state.includeSummaryRows,
     minItems: 1,
@@ -1234,8 +1320,8 @@ function executeSearch() {
   state.isSearching = true;
   state.pendingSearchOptions = options;
   state.lastSearchContext = {
-    dateFromIso: options.dateFromIso,
-    dateToIso: options.dateToIso,
+    dateFromIso: state.dateFromIso || null,
+    dateToIso: state.dateToIso || null,
     targetAmount: options.targetAmount,
     tolerance: options.tolerance,
     keyword: options.keyword,
@@ -2025,9 +2111,46 @@ function getLedgerItemsByView(viewMode) {
     case 'filtered':
     default:
       return state.items.filter(
-        (it) => state.pinnedIds.has(it.id) || doesItemMatchStep2Filter(it)
+        (it) =>
+          (state.pinnedIds.has(it.id) && (state.includeSummaryRows || !it.isSummaryRow)) ||
+          doesItemMatchStep2Filter(it)
       );
   }
+}
+
+function getCurrentPageLedgerItems(viewItemsInput = null) {
+  const currentViewItems =
+    viewItemsInput !== null ? viewItemsInput : getLedgerItemsByView(state.ledgerView);
+  const totalPages = Math.max(1, Math.ceil(currentViewItems.length / state.ledgerPageSize));
+  const safePage = Math.min(Math.max(1, state.ledgerPage), totalPages);
+  const startIdx = (safePage - 1) * state.ledgerPageSize;
+  return currentViewItems.slice(startIdx, startIdx + state.ledgerPageSize);
+}
+
+function syncSelectAllCheckboxState(pageItemsInput = null) {
+  if (!dom.chkSelectAllVisible) return;
+  const pageItems =
+    pageItemsInput !== null ? pageItemsInput : getCurrentPageLedgerItems();
+  const selectableItems = pageItems.filter(
+    (it) => !it.isSummaryRow || state.includeSummaryRows
+  );
+
+  if (selectableItems.length === 0) {
+    dom.chkSelectAllVisible.checked = false;
+    dom.chkSelectAllVisible.indeterminate = false;
+    return;
+  }
+
+  let checkedCount = 0;
+  for (const it of selectableItems) {
+    if (state.checkedIds.has(it.id)) {
+      checkedCount++;
+    }
+  }
+
+  dom.chkSelectAllVisible.checked = checkedCount === selectableItems.length;
+  dom.chkSelectAllVisible.indeterminate =
+    checkedCount > 0 && checkedCount < selectableItems.length;
 }
 
 function renderLedgerSection() {
@@ -2044,6 +2167,7 @@ function renderLedgerSection() {
     dom.btnClearExcludes.classList.add('hidden');
     dom.ledgerPaginationBar.classList.add('hidden');
     dom.chkSelectAllVisible.checked = false;
+    dom.chkSelectAllVisible.indeterminate = false;
     dom.chkSelectAllVisible.disabled = true;
 
     dom.ledgerTableBody.innerHTML = `
@@ -2131,7 +2255,7 @@ function renderLedgerSection() {
 
   // Render các dòng bảng sổ chi tiết
   if (pageItems.length === 0) {
-    dom.chkSelectAllVisible.checked = false;
+    syncSelectAllCheckboxState([]);
     dom.ledgerTableBody.innerHTML = `
       <tr>
         <td colspan="8" class="empty-grid-cell">
@@ -2140,8 +2264,7 @@ function renderLedgerSection() {
       </tr>
     `;
   } else {
-    const allPageChecked = pageItems.every((it) => state.checkedIds.has(it.id));
-    dom.chkSelectAllVisible.checked = allPageChecked;
+    syncSelectAllCheckboxState(pageItems);
 
     dom.ledgerTableBody.innerHTML = pageItems
       .map((item) => buildLedgerRowHtml(item))
@@ -2360,6 +2483,11 @@ function bindEvents() {
   dom.headerRowSelect.addEventListener('change', () => {
     const customRow = Number(dom.headerRowSelect.value);
     if (Number.isInteger(customRow) && customRow >= 0) {
+      if (customRow !== state.headerRowIndex) {
+        clearBatchesAndResultsOnStructuralChange(
+          'Đã làm mới danh sách đợt đối soát do thay đổi dòng tiêu đề Excel.'
+        );
+      }
       inspectAndExtractCurrentSheet(customRow, false);
       state.isMappingOpen = true;
       syncMappingPanelVisibility();
@@ -2368,7 +2496,13 @@ function bindEvents() {
 
   // Đổi cấu hình các cột
   const onColumnControlChange = () => {
+    const prevMapping = { ...state.mapping };
     readMappingFromControls();
+    if (hasAmountMappingChanged(prevMapping, state.mapping)) {
+      clearBatchesAndResultsOnStructuralChange(
+        'Đã làm mới danh sách đợt đối soát do thay đổi cấu hình cột Số tiền.'
+      );
+    }
     syncAmountModeVisibility();
     runDataExtraction(false);
   };
@@ -2383,11 +2517,17 @@ function bindEvents() {
   dom.includeSummaryCheckbox.addEventListener('change', onColumnControlChange);
 
   dom.btnApplyMapping.addEventListener('click', () => {
+    const prevMapping = { ...state.mapping };
     readMappingFromControls();
     const completeness = evaluateMappingCompleteness(state.mapping);
     if (!completeness.hasAmount) {
       showToast('Vui lòng chọn cột Số tiền trước khi đóng thiết lập.', 'warn');
       return;
+    }
+    if (hasAmountMappingChanged(prevMapping, state.mapping)) {
+      clearBatchesAndResultsOnStructuralChange(
+        'Đã làm mới danh sách đợt đối soát do thay đổi cấu hình cột Số tiền.'
+      );
     }
     state.isMappingOpen = false;
     runDataExtraction(false);
@@ -2660,6 +2800,7 @@ function bindEvents() {
     if (rowEl) {
       rowEl.classList.toggle('row-checked', chk.checked);
     }
+    syncSelectAllCheckboxState();
     updateLedgerStatusBar();
   });
 
@@ -2703,7 +2844,7 @@ function bindEvents() {
 
   dom.btnClearChecked.addEventListener('click', () => {
     state.checkedIds.clear();
-    dom.chkSelectAllVisible.checked = false;
+    syncSelectAllCheckboxState();
     renderLedgerSection();
   });
 }
