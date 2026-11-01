@@ -1,0 +1,1805 @@
+/* ==========================================================================
+   CÔNG CỤ ĐỐI SOÁT VÀ GOM KHOẢN TIỀN EXCEL - GIAO DIỆN NGHIỆP VỤ KẾ TOÁN
+   Thiết kế chuẩn phần mềm văn phòng (Excel / MISA / Fast):
+   - Không hiệu ứng màu mè, không gradient, không bo góc lớn, không emoji
+   - Độ tương phản cao, đường kẻ bảng rõ nét, hỗ trợ cỡ chữ Lớn cho kế toán lớn tuổi
+   ========================================================================== */
+
+:root,
+html[data-font-size="normal"] {
+  --font-sans: "Segoe UI", Tahoma, Arial, sans-serif;
+  --font-num: "Segoe UI", Tahoma, Arial, sans-serif;
+
+  /* Thang cỡ chữ chuẩn */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 17px;
+  --fs-amount: 21px;
+
+  /* Khoảng đệm bảng và ô nhập */
+  --cell-pad-y: 7px;
+  --cell-pad-x: 10px;
+  --input-h: 36px;
+  --checkbox-size: 16px;
+
+  /* Bảng màu kế toán công sở */
+  --excel-green: #185C37;
+  --excel-green-hover: #12472A;
+  --excel-green-soft: #ECFDF3;
+  --excel-green-badge-bg: #DCFCE7;
+  --excel-green-badge-border: #15803D;
+  --excel-green-badge-text: #14532D;
+
+  --navy-accent: #1B365D;
+  --bg-page: #EFF2F5;
+  --bg-panel: #FFFFFF;
+  --bg-panel-header: #E9EEF4;
+  --bg-grid-header: #E6ECF2;
+  --bg-row-even: #F9FBFD;
+  --bg-row-hover: #FEF9C3;
+
+  --border-panel: #C8D1DC;
+  --border-input: #94A3B8;
+  --border-grid: #D1D9E0;
+  --border-grid-header: #B8C4D0;
+
+  --text-main: #0F172A;
+  --text-secondary: #334155;
+  --text-muted: #475569;
+
+  --red-accounting: #B91C1C;
+  --red-bg-soft: #FEF2F2;
+  --red-border: #DC2626;
+
+  --amber-bg: #FEF3C7;
+  --amber-border: #B45309;
+  --amber-text: #78350F;
+
+  --blue-pin-bg: #DBEAFE;
+  --blue-pin-row: #EFF6FF;
+  --blue-pin-border: #1D4ED8;
+  --blue-pin-text: #1E3A8A;
+
+  --radius-sm: 3px;
+}
+
+/* Chế độ Cỡ chữ Lớn (tăng ~115% - 118% cho kế toán lớn tuổi nhìn rõ) */
+html[data-font-size="large"] {
+  --fs-xs: 14px;
+  --fs-sm: 15px;
+  --fs-base: 16.5px;
+  --fs-md: 17.5px;
+  --fs-lg: 20px;
+  --fs-amount: 25px;
+
+  --cell-pad-y: 9px;
+  --cell-pad-x: 12px;
+  --input-h: 42px;
+  --checkbox-size: 19px;
+}
+
+/* Reset cơ bản */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-page);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ==========================================================================
+   THANH TIÊU ĐỀ TRÊN CÙNG (APP TOPBAR)
+   ========================================================================== */
+.app-topbar {
+  background-color: var(--excel-green);
+  color: #FFFFFF;
+  border-bottom: 2px solid #0F3D23;
+  padding: 9px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-badge {
+  background-color: #FFFFFF;
+  color: var(--excel-green);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 2px;
+  letter-spacing: 0.4px;
+}
+
+.app-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #FFFFFF;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.privacy-note {
+  font-size: var(--fs-sm);
+  color: #E2F2E9;
+  padding-right: 12px;
+  border-right: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.topbar-btn {
+  background-color: #12472A;
+  color: #FFFFFF;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.topbar-btn:hover {
+  background-color: #0D351F;
+  border-color: #FFFFFF;
+}
+
+.font-size-control {
+  display: inline-flex;
+  align-items: center;
+  background-color: #12472A;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  gap: 4px;
+}
+
+.font-size-label {
+  font-size: var(--fs-sm);
+  padding: 0 5px;
+  color: #F1F5F9;
+}
+
+.font-btn {
+  background: transparent;
+  color: #E2E8F0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 3px 9px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.font-btn:hover {
+  color: #FFFFFF;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.font-btn.active {
+  background-color: #FFFFFF;
+  color: var(--excel-green);
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   KHUNG HƯỚNG DẪN SỬ DỤNG NHANH
+   ========================================================================== */
+.guide-panel {
+  background-color: #F8FAFC;
+  border-bottom: 1px solid var(--border-panel);
+  padding: 12px 18px;
+}
+
+.guide-inner {
+  max-width: 1480px;
+  margin: 0 auto;
+  background-color: #FFFFFF;
+  border: 1px solid var(--border-panel);
+  border-left: 4px solid var(--excel-green);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+}
+
+.guide-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-grid);
+  font-size: var(--fs-md);
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.guide-step {
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-grid);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.guide-step-title {
+  font-weight: 700;
+  color: var(--excel-green);
+  margin-bottom: 5px;
+  font-size: var(--fs-base);
+}
+
+.guide-step p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.guide-step code {
+  background-color: #E2E8F0;
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-family: Consolas, monospace;
+}
+
+/* ==========================================================================
+   THANH THÔNG BÁO (TOAST CHUẨN VĂN PHÒNG)
+   ========================================================================== */
+.status-toast {
+  position: fixed;
+  top: 56px;
+  right: 18px;
+  z-index: 1000;
+  max-width: 520px;
+  background-color: #1E293B;
+  color: #FFFFFF;
+  border: 1px solid #0F172A;
+  border-left: 5px solid #22C55E;
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.22);
+}
+
+.status-toast.toast-error {
+  background-color: #7F1D1D;
+  border-color: #450A0A;
+  border-left-color: #FCA5A5;
+}
+
+.status-toast.toast-warn {
+  background-color: #78350F;
+  border-color: #451A03;
+  border-left-color: #FCD34D;
+}
+
+/* ==========================================================================
+   KHÔNG GIAN LÀM VIỆC & KHUNG PANEL
+   ========================================================================== */
+.workspace {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 14px 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--radius-sm);
+}
+
+.panel-header {
+  background-color: var(--bg-panel-header);
+  border-bottom: 1px solid var(--border-panel);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panel-header-batches {
+  background-color: #E3F2EA;
+  border-bottom-color: #9BC4AE;
+}
+
+.panel-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.step-tag {
+  background-color: var(--navy-accent);
+  color: #FFFFFF;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 2px;
+  letter-spacing: 0.3px;
+}
+
+.step-tag-done {
+  background-color: var(--excel-green);
+}
+
+.step-tag-neutral {
+  background-color: #334155;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panel-body {
+  padding: 14px;
+}
+
+.panel-body-flush {
+  padding: 0;
+}
+
+/* ==========================================================================
+   NÚT BẤM & Ô NHẬP CHUẨN DESKTOP KẾ TOÁN
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--input-h);
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text-main);
+  background-color: #F8FAFC;
+  border: 1px solid #94A3B8;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  background-color: #E2E8F0;
+  border-color: #64748B;
+}
+
+.btn:focus-visible,
+.form-input:focus-visible,
+.form-select:focus-visible,
+.tab-btn:focus-visible,
+.quick-chip:focus-visible {
+  outline: 2px solid var(--excel-green);
+  outline-offset: 1px;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background-color: var(--excel-green);
+  border-color: #12472A;
+  color: #FFFFFF;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--excel-green-hover);
+  border-color: #0B2E1B;
+  color: #FFFFFF;
+}
+
+.btn-secondary {
+  background-color: #EEF2F6;
+  border-color: #64748B;
+  color: var(--navy-accent);
+  font-weight: 700;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: #DCE5F0;
+  border-color: var(--navy-accent);
+}
+
+.btn-danger {
+  background-color: var(--red-accounting);
+  border-color: #991B1B;
+  color: #FFFFFF;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #991B1B;
+  color: #FFFFFF;
+}
+
+.btn-sm {
+  min-height: 31px;
+  padding: 4px 11px;
+  font-size: var(--fs-sm);
+}
+
+.btn-xs {
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+}
+
+.btn-link-sm {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--navy-accent);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.btn-link-sm:hover {
+  color: var(--red-accounting);
+}
+
+.link-action {
+  color: var(--navy-accent);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.link-action:hover {
+  color: var(--excel-green);
+}
+
+.form-input,
+.form-select {
+  height: var(--input-h);
+  padding: 5px 10px;
+  font-family: inherit;
+  font-size: var(--fs-base);
+  color: var(--text-main);
+  background-color: #FFFFFF;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-sm);
+  width: 100%;
+}
+
+.form-input:focus,
+.form-select:focus {
+  border-color: var(--excel-green);
+}
+
+.form-select-sm {
+  height: 31px;
+  padding: 3px 8px;
+  font-size: var(--fs-sm);
+  width: auto;
+}
+
+.form-select-xs {
+  height: 27px;
+  padding: 2px 6px;
+  font-size: var(--fs-xs);
+  width: auto;
+}
+
+input[type="checkbox"] {
+  width: var(--checkbox-size);
+  height: var(--checkbox-size);
+  accent-color: var(--excel-green);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+/* ==========================================================================
+   BƯỚC 1: VÙNG NẠP FILE EXCEL & THIẾT LẬP CỘT
+   ========================================================================== */
+.upload-bar {
+  border: 1px dashed #64748B;
+  background-color: #F8FAFC;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.upload-bar.drag-over {
+  background-color: var(--excel-green-soft);
+  border: 2px solid var(--excel-green);
+}
+
+.upload-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-hint {
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.upload-sample-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.loaded-file-bar {
+  margin-top: 10px;
+  padding: 9px 12px;
+  background-color: #F1F5F9;
+  border: 1px solid var(--border-panel);
+  border-left: 4px solid var(--excel-green);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.loaded-file-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.file-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.meta-label {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.meta-value {
+  color: var(--navy-accent);
+  font-size: var(--fs-base);
+}
+
+.extract-summary {
+  font-weight: 700;
+  color: var(--excel-green);
+  font-size: var(--fs-base);
+}
+
+.loaded-file-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.mapped-cols-summary {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background-color: #FFFFFF;
+  border: 1px solid var(--border-grid);
+  padding: 3px 8px;
+  border-radius: 2px;
+}
+
+.mapping-panel {
+  margin-top: 10px;
+  padding: 14px;
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--radius-sm);
+}
+
+.alert-box {
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 12px;
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.alert-warning {
+  background-color: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber-text);
+}
+
+.alert-error {
+  background-color: var(--red-bg-soft);
+  border: 1px solid var(--red-border);
+  color: var(--red-accounting);
+}
+
+.mapping-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(265px, 1fr));
+  gap: 12px 16px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.req-mark {
+  color: var(--red-accounting);
+}
+
+.field-help {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.mapping-footer {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-grid);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   BƯỚC 2: THANH ĐIỀU KIỆN LỌC & TÌM TỔ HỢP GOM KHOẢN TIỀN
+   ========================================================================== */
+.presets-bar {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  background-color: #F0FDF4;
+  border: 1px solid #86EFAC;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.presets-label {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--excel-green-badge-text);
+}
+
+.presets-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.preset-btn {
+  background-color: #FFFFFF;
+  border: 1px solid var(--excel-green);
+  color: var(--excel-green);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preset-btn:hover,
+.preset-btn.active {
+  background-color: var(--excel-green);
+  color: #FFFFFF;
+}
+
+.search-form-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.search-primary-row {
+  display: grid;
+  grid-template-columns: 1.35fr 1.25fr 0.9fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.filter-box {
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--radius-sm);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.filter-box-amount {
+  background-color: #FFFFFF;
+  border: 2px solid var(--navy-accent);
+}
+
+.filter-box-header-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.filter-box-title {
+  font-size: var(--fs-base);
+  font-weight: 700;
+  color: var(--navy-accent);
+}
+
+.date-inputs-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.date-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sub-label {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.date-input {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.date-vn-readout {
+  font-size: var(--fs-xs);
+  color: var(--navy-accent);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-sep {
+  padding-top: 26px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.month-quick-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.quick-label {
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.quick-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.quick-chip {
+  background-color: #FFFFFF;
+  border: 1px solid #94A3B8;
+  color: var(--text-main);
+  border-radius: 2px;
+  padding: 3px 8px;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.quick-chip:hover {
+  background-color: #E2E8F0;
+  border-color: #475569;
+}
+
+.quick-chip.active {
+  background-color: var(--navy-accent);
+  border-color: var(--navy-accent);
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.muted-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* Ô nhập Số tiền cần gom lớn, rõ nét */
+.amount-input-wrap,
+.tolerance-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.amount-main-input {
+  height: calc(var(--input-h) + 8px);
+  padding-right: 52px;
+  font-family: var(--font-num);
+  font-size: var(--fs-amount);
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+  border: 1px solid #475569;
+}
+
+.amount-main-input::placeholder {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  text-align: left;
+  color: #64748B;
+}
+
+.amount-main-input.is-negative {
+  color: var(--red-accounting);
+}
+
+.currency-suffix {
+  position: absolute;
+  right: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.amount-words {
+  min-height: 22px;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--navy-accent);
+  background-color: #F1F5F9;
+  border: 1px solid #CBD5E1;
+  border-radius: 2px;
+  padding: 4px 8px;
+}
+
+.amount-words.is-empty {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.tolerance-prefix {
+  position: absolute;
+  left: 10px;
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.tolerance-input {
+  height: calc(var(--input-h) + 4px);
+  padding-left: 28px;
+  padding-right: 48px;
+  text-align: right;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hàng 2: Bộ lọc phụ + Nút Tìm Tổ Hợp */
+.search-secondary-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-grid);
+}
+
+.secondary-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex: 1 1 500px;
+  flex-wrap: wrap;
+}
+
+.secondary-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.secondary-field-keyword {
+  flex: 1 1 310px;
+}
+
+.secondary-field-maxitems {
+  flex: 0 0 210px;
+}
+
+.input-with-clear {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-with-clear .form-input {
+  padding-right: 52px;
+}
+
+.btn-inline-clear {
+  position: absolute;
+  right: 6px;
+  background-color: #E2E8F0;
+  border: 1px solid #94A3B8;
+  border-radius: 2px;
+  padding: 2px 7px;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.btn-inline-clear:hover {
+  background-color: #CBD5E1;
+  color: var(--text-main);
+}
+
+.search-submit-area {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.candidate-preview-info {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-grid);
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.search-main-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-search-cta {
+  min-height: calc(var(--input-h) + 8px);
+  padding: 8px 24px;
+  background-color: var(--excel-green);
+  border: 2px solid #0F3D23;
+  color: #FFFFFF;
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.btn-search-cta:hover:not(:disabled) {
+  background-color: var(--excel-green-hover);
+  border-color: #082414;
+  color: #FFFFFF;
+}
+
+.search-progress-strip {
+  padding: 8px 12px;
+  background-color: #FEF9C3;
+  border: 1px solid #CA8A04;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: #713F12;
+}
+
+.progress-indicator-box {
+  background-color: #854D0E;
+  color: #FFFFFF;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 2px;
+}
+
+/* ==========================================================================
+   CÁC TAB LỌC KẾT QUẢ & LỌC SỔ CHI TIẾT
+   ========================================================================== */
+.results-filter-tabs,
+.ledger-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tab-btn {
+  background-color: #FFFFFF;
+  border: 1px solid #94A3B8;
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 5px 11px;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-btn:hover {
+  background-color: #E2E8F0;
+  color: var(--text-main);
+}
+
+.tab-btn.active {
+  background-color: var(--navy-accent);
+  border-color: var(--navy-accent);
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   KHU VỰC KẾT QUẢ PHƯƠNG ÁN GOM TIỀN
+   ========================================================================== */
+.results-summary-banner {
+  margin-bottom: 12px;
+  padding: 10px 13px;
+  background-color: #F1F5F9;
+  border: 1px solid var(--border-panel);
+  border-left: 4px solid var(--navy-accent);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-base);
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.results-summary-banner.has-exact {
+  background-color: #F0FDF4;
+  border-color: #86EFAC;
+  border-left-color: var(--excel-green);
+}
+
+.results-summary-banner.no-match {
+  background-color: #FEF2F2;
+  border-color: #FECACA;
+  border-left-color: var(--red-accounting);
+}
+
+.timeout-note {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #CBD5E1;
+  color: var(--amber-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.solutions-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty-state-box {
+  padding: 24px 18px;
+  text-align: center;
+  background-color: #F8FAFC;
+  border: 1px dashed var(--border-panel);
+  border-radius: var(--radius-sm);
+}
+
+.empty-state-title {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--text-main);
+  margin-bottom: 6px;
+}
+
+.empty-state-desc {
+  margin: 0 auto;
+  max-width: 760px;
+  font-size: var(--fs-base);
+  color: var(--text-secondary);
+}
+
+.empty-hints-list {
+  margin: 10px auto 0;
+  padding-left: 20px;
+  max-width: 680px;
+  text-align: left;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.empty-hints-list li {
+  margin-bottom: 4px;
+}
+
+/* Khung từng Phương án Gom */
+.solution-card {
+  border: 1px solid #94A3B8;
+  border-radius: var(--radius-sm);
+  background-color: #FFFFFF;
+}
+
+.solution-card.solution-exact {
+  border-color: #15803D;
+}
+
+.solution-card.solution-expanded {
+  border-width: 2px;
+}
+
+.solution-header {
+  width: 100%;
+  background-color: #F8FAFC;
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.solution-card.solution-exact .solution-header {
+  background-color: #F3FAF6;
+}
+
+.solution-card.solution-expanded .solution-header {
+  border-bottom-color: var(--border-grid-header);
+}
+
+.solution-header:hover {
+  background-color: var(--bg-row-hover);
+}
+
+.solution-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.solution-rank {
+  font-size: var(--fs-md);
+  font-weight: 700;
+  color: var(--navy-accent);
+}
+
+.match-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.match-badge-exact {
+  background-color: var(--excel-green-badge-bg);
+  border: 1px solid var(--excel-green-badge-border);
+  color: var(--excel-green-badge-text);
+}
+
+.match-badge-near {
+  background-color: var(--amber-bg);
+  border: 1px solid var(--amber-border);
+  color: var(--amber-text);
+}
+
+.match-badge-stale {
+  background-color: #E2E8F0;
+  border: 1px solid #64748B;
+  color: #334155;
+}
+
+.solution-meta-sep {
+  color: #94A3B8;
+}
+
+.solution-meta-item {
+  font-size: var(--fs-base);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.solution-meta-item strong {
+  color: var(--text-main);
+}
+
+.solution-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.solution-toggle-label {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--navy-accent);
+  text-decoration: underline;
+}
+
+.solution-body {
+  padding: 12px 14px;
+  background-color: #FFFFFF;
+}
+
+.solution-actions-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-grid);
+}
+
+.solution-note-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 300px;
+}
+
+.solution-note-wrap label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.solution-note-input {
+  max-width: 340px;
+  height: 33px;
+  font-size: var(--fs-sm);
+}
+
+.solution-action-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.duplicate-variant-note {
+  margin-top: 9px;
+  padding: 8px 11px;
+  background-color: #FFFBEB;
+  border: 1px solid #D97706;
+  border-radius: 2px;
+  font-size: var(--fs-sm);
+  color: #78350F;
+}
+
+/* ==========================================================================
+   QUẢN LÝ CÁC ĐỢT ĐÃ GOM (BATCHES PANEL)
+   ========================================================================== */
+.batches-summary-bar {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-grid);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.export-opt-label {
+  background-color: #FFFFFF;
+  border: 1px solid #9BC4AE;
+  padding: 4px 9px;
+  border-radius: 2px;
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.batch-note-edit {
+  height: 30px;
+  font-size: var(--fs-sm);
+  padding: 3px 8px;
+}
+
+/* ==========================================================================
+   BẢNG LƯỚI CHUẨN EXCEL (GRID TABLE DÙNG CHUNG & SỔ CHI TIẾT)
+   ========================================================================== */
+.table-scroll-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-grid-header);
+}
+
+.ledger-toolbar {
+  padding: 10px 14px;
+  background-color: #F8FAFC;
+  border-bottom: 1px solid var(--border-panel);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ledger-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pagesize-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+.ledger-table-wrap {
+  width: 100%;
+  max-height: 560px;
+  overflow: auto;
+  border-top: 1px solid var(--border-grid-header);
+  border-bottom: 1px solid var(--border-grid-header);
+}
+
+.grid-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  font-size: var(--fs-base);
+  background-color: #FFFFFF;
+}
+
+.grid-table th,
+.grid-table td {
+  border: 1px solid var(--border-grid);
+  padding: var(--cell-pad-y) var(--cell-pad-x);
+  vertical-align: middle;
+}
+
+.grid-table thead th {
+  background-color: var(--bg-grid-header);
+  color: var(--text-main);
+  font-weight: 700;
+  border-color: var(--border-grid-header);
+  box-shadow: inset 0 -1px 0 var(--border-grid-header);
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.grid-table tbody tr:nth-child(even) {
+  background-color: var(--bg-row-even);
+}
+
+/* Highlight vàng nhạt chuẩn kế toán khi di chuột qua dòng */
+.grid-table tbody tr:hover {
+  background-color: var(--bg-row-hover) !important;
+}
+
+/* Các trạng thái dòng trên Sổ Chi Tiết */
+.grid-table tbody tr.row-reconciled {
+  background-color: var(--excel-green-soft);
+}
+
+.grid-table tbody tr.row-pinned {
+  background-color: var(--blue-pin-row);
+}
+
+.grid-table tbody tr.row-excluded {
+  background-color: #F1F5F9;
+  color: #64748B;
+}
+
+.grid-table tbody tr.row-summary {
+  background-color: #EFEFEF;
+  color: #475569;
+  font-style: italic;
+}
+
+.grid-table tbody tr.row-checked {
+  background-color: #FEFCE8;
+}
+
+.grid-table tbody tr.row-inspected {
+  background-color: #FEF08A !important;
+}
+
+.grid-table tfoot td {
+  background-color: #F1F5F9;
+  border-top: 2px solid #64748B;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Căn chỉnh cột bảng */
+.col-check {
+  width: 42px;
+  text-align: center !important;
+}
+
+.col-center {
+  text-align: center !important;
+}
+
+.col-excel-row {
+  width: 92px;
+  text-align: center !important;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.col-date {
+  width: 112px;
+  text-align: center !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.col-ref {
+  width: 135px;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--navy-accent);
+}
+
+.col-desc {
+  min-width: 240px;
+}
+
+.col-num,
+.col-amount {
+  text-align: right !important;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.col-amount {
+  width: 160px;
+}
+
+.col-status {
+  width: 165px;
+  white-space: nowrap;
+}
+
+.col-actions {
+  width: 185px;
+  text-align: center !important;
+  white-space: nowrap;
+}
+
+/* Số âm màu đỏ kế toán */
+.num-val {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.num-neg {
+  color: var(--red-accounting) !important;
+}
+
+.num-zero {
+  color: var(--excel-green) !important;
+}
+
+/* Nhãn trạng thái dòng trong bảng */
+.status-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  border-radius: 2px;
+  border: 1px solid transparent;
+}
+
+.status-unreconciled {
+  background-color: #F8FAFC;
+  border-color: #CBD5E1;
+  color: #475569;
+  font-weight: 600;
+}
+
+.status-reconciled {
+  background-color: var(--excel-green-badge-bg);
+  border-color: var(--excel-green-badge-border);
+  color: var(--excel-green-badge-text);
+}
+
+.status-pinned {
+  background-color: var(--blue-pin-bg);
+  border-color: var(--blue-pin-border);
+  color: var(--blue-pin-text);
+}
+
+.status-excluded {
+  background-color: #E2E8F0;
+  border-color: #94A3B8;
+  color: #475569;
+}
+
+.status-summary {
+  background-color: #E5E7EB;
+  border-color: #9CA3AF;
+  color: #374151;
+}
+
+/* Nút Ghim / Loại trừ nhỏ gọn trên từng dòng */
+.row-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.row-btn {
+  background-color: #FFFFFF;
+  border: 1px solid #94A3B8;
+  color: var(--text-secondary);
+  border-radius: 2px;
+  padding: 2px 7px;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.row-btn:hover:not(:disabled) {
+  background-color: #E2E8F0;
+  color: var(--text-main);
+}
+
+.row-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.row-btn.active-pin {
+  background-color: var(--blue-pin-border);
+  border-color: var(--blue-pin-text);
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.row-btn.active-exclude {
+  background-color: #475569;
+  border-color: #1E293B;
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+.empty-grid-cell {
+  text-align: center;
+  padding: 28px 16px !important;
+  color: var(--text-muted);
+}
+
+/* Phân trang sổ chi tiết */
+.ledger-pagination {
+  padding: 8px 14px;
+  background-color: #F8FAFC;
+  border-bottom: 1px solid var(--border-grid);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-btns {
+  display: flex;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   THANH TÍNH TỔNG TỨC THỜI DƯỚI CHÂN BẢNG (CHUẨN EXCEL STATUS BAR)
+   ========================================================================== */
+.excel-statusbar {
+  background-color: #E6ECF2;
+  border-top: 2px solid var(--excel-green);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.excel-statusbar.has-selection {
+  background-color: #ECFDF3;
+  border-top-color: var(--excel-green);
+}
+
+.statusbar-left,
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.statusbar-sep {
+  color: #94A3B8;
+}
+
+.statusbar-clear-btn {
+  background-color: #FFFFFF;
+  border: 1px solid #64748B;
+  border-radius: 2px;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.statusbar-clear-btn:hover {
+  background-color: #FEE2E2;
+  border-color: var(--red-accounting);
+  color: var(--red-accounting);
+}
+
+/* Chân trang */
+.app-footer {
+  max-width: 1480px;
+  margin: 0 auto 24px;
+  padding: 0 16px;
+  text-align: center;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
+   RESPONSIVE CHO MÀN HÌNH LAPTOP KẾ TOÁN (1024px - 1366px) & MÀN HÌNH NHỎ
+   ========================================================================== */
+@media (max-width: 1120px) {
+  .search-primary-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .filter-box-dates {
+    grid-column: 1 / -1;
+  }
+
+  .guide-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .search-primary-row {
+    grid-template-columns: 1fr;
+  }
+
+  .privacy-note {
+    display: none;
+  }
+
+  .date-inputs-row {
+    flex-direction: column;
+  }
+
+  .date-sep {
+    display: none;
+  }
+}

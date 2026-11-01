@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="vi" data-font-size="normal">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Công Cụ Đối Soát Và Gom Khoản Tiền Excel - Nghiệp Vụ Kế Toán</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='3' fill='%23185C37'/%3E%3Cpath d='M6 8h20v3H6zm0 6.5h12v3H6zm14 0h6v3h-6zM6 21h12v3H6zm14 0h6v3h-6z' fill='%23ffffff'/%3E%3C/svg%3E">
+  <script>
+    try {
+      var savedScale = localStorage.getItem('af_font_scale');
+      if (savedScale === 'large') {
+        document.documentElement.setAttribute('data-font-size', 'large');
+      }
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="./src/styles/accounting.css">
+</head>
+<body>
+  <!-- Thanh tiêu đề chuẩn phần mềm kế toán / Excel -->
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <span class="app-badge">KẾ TOÁN</span>
+      <h1 class="app-title">CÔNG CỤ ĐỐI SOÁT VÀ GOM KHOẢN TIỀN EXCEL</h1>
+    </div>
+    <div class="topbar-right">
+      <span class="privacy-note">Xử lý trực tiếp trên máy - Bảo mật sổ sách kế toán</span>
+      <button type="button" id="btnToggleGuide" class="topbar-btn" aria-expanded="false">Hướng dẫn sử dụng</button>
+      <div class="font-size-control" role="group" aria-label="Tùy chỉnh cỡ chữ hiển thị">
+        <span class="font-size-label">Cỡ chữ:</span>
+        <button type="button" id="btnFontNormal" class="font-btn active">Chuẩn</button>
+        <button type="button" id="btnFontLarge" class="font-btn">Lớn</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Khung hướng dẫn nhanh 3 bước (mặc định thu gọn) -->
+  <section id="quickGuidePanel" class="guide-panel hidden" aria-label="Hướng dẫn sử dụng nhanh">
+    <div class="guide-inner">
+      <div class="guide-header">
+        <strong>QUY TRÌNH ĐỐI SOÁT 3 BƯỚC DÀNH CHO KẾ TOÁN</strong>
+        <button type="button" id="btnCloseGuide" class="btn btn-sm">Đóng hướng dẫn</button>
+      </div>
+      <div class="guide-steps">
+        <div class="guide-step">
+          <div class="guide-step-title">Bước 1: Mở sổ Excel công nợ / bảng kê</div>
+          <p>Chọn file Excel (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) từ máy tính hoặc bấm <strong>Nạp bảng kê mẫu để thử</strong>. Hệ thống tự nhận diện dòng tiêu đề, cột Ngày, Số tiền, Diễn giải và tự bỏ qua các dòng Tổng cộng cuối kỳ.</p>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title">Bước 2: Nhập số tiền cần gom và khoảng ngày</div>
+          <p>Chọn kỳ chứng từ (có thể bấm nhanh theo từng Tháng), nhập số tiền khách chuyển trên sao kê ngân hàng và độ lệch làm tròn cho phép (mặc định <strong>± 500 đồng</strong>), sau đó bấm <strong>TÌM TỔ HỢP KHỚP SỐ TIỀN</strong>.</p>
+        </div>
+        <div class="guide-step">
+          <div class="guide-step-title">Bước 3: Sao chép sang Excel hoặc đánh dấu Đợt đối soát</div>
+          <p>Bấm <strong>Sao chép sang Excel</strong> rồi qua Excel nhấn <code>Ctrl + V</code> để dán ngay các dòng chứng từ, hoặc bấm <strong>Xác nhận Gom đợt này</strong> để khóa các hóa đơn đã khớp và tiếp tục tìm khoản tiền thứ 2, thứ 3 trên cùng sổ.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Thanh thông báo thao tác -->
+  <div id="statusToast" class="status-toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Không gian làm việc chính -->
+  <main class="workspace">
+    <!-- ================================================================== -->
+    <!-- BƯỚC 1: NẠP FILE EXCEL & KIỂM TRA CỘT                              -->
+    <!-- ================================================================== -->
+    <section class="panel" id="step1Panel">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="step-tag">BƯỚC 1</span>
+          <h2 class="panel-title">NẠP FILE EXCEL VÀ KIỂM TRA CỘT DỮ LIỆU</h2>
+        </div>
+        <div class="panel-header-actions" id="step1HeaderActions">
+          <a href="./public/mau-cong-no-ke-toan.xlsx" download="mau-cong-no-ke-toan.xlsx" class="link-action">Tải file Excel mẫu (.xlsx)</a>
+        </div>
+      </div>
+
+      <div class="panel-body">
+        <!-- Khu vực chọn file / kéo thả + nạp dữ liệu mẫu -->
+        <div class="upload-bar" id="dropZone">
+          <input type="file" id="excelFileInput" accept=".xlsx,.xls,.csv" class="sr-only">
+          <div class="upload-main">
+            <button type="button" id="btnPickFile" class="btn btn-primary">Chọn file Excel từ máy...</button>
+            <span class="upload-hint">hoặc kéo thả tệp <strong>.xlsx, .xls, .csv</strong> trực tiếp vào khung này</span>
+          </div>
+          <div class="upload-sample-actions">
+            <button type="button" id="btnLoadSample" class="btn btn-secondary">Nạp bảng kê mẫu để thử</button>
+          </div>
+        </div>
+
+        <!-- Thanh thông tin tệp sau khi nạp -->
+        <div id="loadedFileBar" class="loaded-file-bar hidden">
+          <div class="loaded-file-info">
+            <div class="file-meta-item">
+              <span class="meta-label">Tệp đang mở:</span>
+              <strong id="fileNameDisplay" class="meta-value">-</strong>
+            </div>
+            <div id="sheetSelectWrap" class="file-meta-item">
+              <label for="sheetSelect" class="meta-label">Trang tính (Sheet):</label>
+              <select id="sheetSelect" class="form-select form-select-sm"></select>
+            </div>
+            <div class="file-meta-item">
+              <span id="extractSummaryText" class="extract-summary">-</span>
+            </div>
+          </div>
+          <div class="loaded-file-right">
+            <span id="mappedColsSummary" class="mapped-cols-summary"></span>
+            <button type="button" id="btnToggleMapping" class="btn btn-sm" aria-expanded="false">Thiết lập cột &amp; dòng tiêu đề</button>
+          </div>
+        </div>
+
+        <!-- Khung thiết lập cột & dòng tiêu đề (mặc định thu gọn nếu đã nhận diện đủ cột) -->
+        <div id="mappingPanel" class="mapping-panel hidden">
+          <div id="mappingWarning" class="alert-box alert-warning hidden"></div>
+
+          <div class="mapping-grid">
+            <div class="form-field">
+              <label for="headerRowSelect" class="field-label">Dòng tiêu đề trong Excel</label>
+              <select id="headerRowSelect" class="form-select"></select>
+              <span class="field-help">Chọn đúng dòng chứa tên các cột (Ngày, Số CT, Số tiền...)</span>
+            </div>
+
+            <div class="form-field">
+              <label for="dateColSelect" class="field-label">Cột Ngày chứng từ <span class="req-mark">*</span></label>
+              <select id="dateColSelect" class="form-select"></select>
+              <span class="field-help">Hỗ trợ chuẩn Việt Nam DD/MM/YYYY và ngày Excel</span>
+            </div>
+
+            <div class="form-field">
+              <label for="amountModeSelect" class="field-label">Chế độ đọc Số tiền <span class="req-mark">*</span></label>
+              <select id="amountModeSelect" class="form-select">
+                <option value="single">1 cột Số tiền chung</option>
+                <option value="debit_minus_credit">Cột Phát sinh Nợ trừ Cột Phát sinh Có</option>
+              </select>
+              <span class="field-help">Chọn 1 cột chung hoặc tính chênh lệch 2 cột Nợ / Có</span>
+            </div>
+
+            <div class="form-field" id="singleAmountWrap">
+              <label for="amountColSelect" class="field-label">Cột Số tiền <span class="req-mark">*</span></label>
+              <select id="amountColSelect" class="form-select"></select>
+              <span class="field-help">Tự nhận số âm dạng -500.000 hoặc (500.000)</span>
+            </div>
+
+            <div class="form-field hidden" id="debitColWrap">
+              <label for="debitColSelect" class="field-label">Cột Cộng (+) / Phát sinh Nợ <span class="req-mark">*</span></label>
+              <select id="debitColSelect" class="form-select"></select>
+              <span class="field-help">Khoản tăng công nợ cần thu / phát sinh tăng</span>
+            </div>
+
+            <div class="form-field hidden" id="creditColWrap">
+              <label for="creditColSelect" class="field-label">Cột Trừ (-) / Phát sinh Có</label>
+              <select id="creditColSelect" class="form-select"></select>
+              <span class="field-help">Khoản giảm trừ, chiết khấu (Số tiền = Cột Cộng - Cột Trừ)</span>
+            </div>
+
+            <div class="form-field">
+              <label for="descColSelect" class="field-label">Cột Diễn giải / Nội dung</label>
+              <select id="descColSelect" class="form-select"></select>
+              <span class="field-help">Dùng để hiển thị và lọc tên khách hàng, nội dung</span>
+            </div>
+
+            <div class="form-field">
+              <label for="refColSelect" class="field-label">Cột Số chứng từ / Hóa đơn</label>
+              <select id="refColSelect" class="form-select"></select>
+              <span class="field-help">Số hóa đơn, số phiếu thu/chi, mã đơn hàng (nếu có)</span>
+            </div>
+          </div>
+
+          <div class="mapping-footer">
+            <label class="checkbox-inline">
+              <input type="checkbox" id="includeSummaryCheckbox">
+              <span>Cho phép xét cả các dòng Tổng cộng / Cộng cuối kỳ khi tìm tổ hợp (mặc định tự động loại bỏ để tránh tính trùng)</span>
+            </label>
+            <div class="mapping-footer-btns">
+              <button type="button" id="btnApplyMapping" class="btn btn-primary btn-sm">Áp dụng &amp; Đóng thiết lập cột</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- BƯỚC 2: ĐIỀU KIỆN LỌC & TÌM TỔ HỢP GOM KHOẢN TIỀN                  -->
+    <!-- ================================================================== -->
+    <section class="panel" id="step2Panel">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="step-tag">BƯỚC 2</span>
+          <h2 class="panel-title">ĐIỀU KIỆN LỌC VÀ TÌM TỔ HỢP GOM KHOẢN TIỀN</h2>
+        </div>
+        <div class="panel-header-actions">
+          <button type="button" id="btnResetFilters" class="btn btn-sm">Đặt lại bộ lọc</button>
+        </div>
+      </div>
+
+      <div class="panel-body">
+        <!-- Thanh ví dụ mẫu nhanh khi đang mở bảng kê mẫu -->
+        <div id="samplePresetsBar" class="presets-bar hidden">
+          <span class="presets-label">Ví dụ thực hành trên bảng kê mẫu (bấm để tự điền và tìm ngay):</span>
+          <div id="presetButtonsList" class="presets-buttons"></div>
+        </div>
+
+        <div class="search-form-layout">
+          <!-- Hàng 1: Khoảng ngày + Số tiền cần gom + Độ lệch -->
+          <div class="search-primary-row">
+            <!-- Khối Khoảng thời gian -->
+            <div class="filter-box filter-box-dates">
+              <div class="filter-box-title">1. Khoảng thời gian chứng từ</div>
+              <div class="date-inputs-row">
+                <div class="date-field">
+                  <label for="dateFromInput" class="sub-label">Từ ngày:</label>
+                  <input type="date" id="dateFromInput" class="form-input date-input">
+                  <span id="dateFromVN" class="date-vn-readout">Định dạng VN: --/--/----</span>
+                </div>
+                <div class="date-sep">đến</div>
+                <div class="date-field">
+                  <label for="dateToInput" class="sub-label">Đến ngày:</label>
+                  <input type="date" id="dateToInput" class="form-input date-input">
+                  <span id="dateToVN" class="date-vn-readout">Định dạng VN: --/--/----</span>
+                </div>
+              </div>
+              <div class="month-quick-wrap">
+                <span class="quick-label">Chọn nhanh theo tháng:</span>
+                <div id="monthQuickBar" class="quick-btn-group">
+                  <span class="muted-note">Nạp file Excel để hiện danh sách tháng có trong sổ</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Khối Số tiền cần gom (Z) -->
+            <div class="filter-box filter-box-amount">
+              <div class="filter-box-header-inline">
+                <label for="targetAmountInput" class="filter-box-title">2. Số tiền cần gom (Z)</label>
+                <button type="button" id="btnClearAmount" class="btn-link-sm">Xóa số</button>
+              </div>
+              <div class="amount-input-wrap">
+                <input
+                  type="text"
+                  id="targetAmountInput"
+                  class="form-input amount-main-input"
+                  inputmode="decimal"
+                  autocomplete="off"
+                  placeholder="Nhập hoặc dán số tiền (VD: 18.450.000)"
+                >
+                <span class="currency-suffix">VNĐ</span>
+              </div>
+              <div id="amountWordsDisplay" class="amount-words">
+                Nhập số tiền khách thanh toán trên sao kê ngân hàng để kiểm tra bằng chữ
+              </div>
+            </div>
+
+            <!-- Khối Độ lệch cho phép (± Sai số) -->
+            <div class="filter-box filter-box-tolerance">
+              <label for="toleranceInput" class="filter-box-title">3. Độ lệch cho phép (± Sai số)</label>
+              <div class="tolerance-input-wrap">
+                <span class="tolerance-prefix">±</span>
+                <input
+                  type="text"
+                  id="toleranceInput"
+                  class="form-input tolerance-input"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  value="500"
+                >
+                <span class="currency-suffix">VNĐ</span>
+              </div>
+              <div class="quick-btn-group tolerance-quick-group" id="toleranceQuickGroup">
+                <button type="button" class="quick-chip" data-tolerance="0">0 (Chính xác)</button>
+                <button type="button" class="quick-chip active" data-tolerance="500">± 500</button>
+                <button type="button" class="quick-chip" data-tolerance="1000">± 1.000</button>
+                <button type="button" class="quick-chip" data-tolerance="5000">± 5.000</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hàng 2: Bộ lọc phụ + Nút bấm tìm kiếm lớn -->
+          <div class="search-secondary-row">
+            <div class="secondary-filters">
+              <div class="secondary-field secondary-field-keyword">
+                <label for="keywordInput" class="field-label">Lọc nội dung / tên khách / số HĐ (không phân biệt dấu):</label>
+                <div class="input-with-clear">
+                  <input
+                    type="text"
+                    id="keywordInput"
+                    class="form-input"
+                    autocomplete="off"
+                    placeholder="VD: Minh Phat, HD0012, thanh toan dot 1..."
+                  >
+                  <button type="button" id="btnClearKeyword" class="btn-inline-clear hidden" title="Xóa từ khóa">Xóa</button>
+                </div>
+              </div>
+
+              <div class="secondary-field secondary-field-maxitems">
+                <label for="maxItemsSelect" class="field-label">Giới hạn số dòng gom tối đa:</label>
+                <select id="maxItemsSelect" class="form-select">
+                  <option value="5">Tối đa 5 dòng</option>
+                  <option value="12" selected>Tối đa 12 dòng (Chuẩn)</option>
+                  <option value="20">Tối đa 20 dòng</option>
+                  <option value="25">Tối đa 25 dòng</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="search-submit-area">
+              <div id="candidatePreviewInfo" class="candidate-preview-info">
+                Chưa nạp sổ dữ liệu.
+              </div>
+              <div class="search-main-buttons">
+                <button type="button" id="btnRunSearch" class="btn btn-search-cta">
+                  TÌM TỔ HỢP KHỚP SỐ TIỀN
+                </button>
+                <button type="button" id="btnCancelSearch" class="btn btn-danger hidden">
+                  Dừng tìm
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Thanh tiến trình khi đang chạy tìm kiếm -->
+          <div id="searchProgressStrip" class="search-progress-strip hidden" aria-live="polite">
+            <span class="progress-indicator-box">ĐANG XỬ LÝ</span>
+            <span id="searchProgressText">Đang kiểm tra các tổ hợp chứng từ phù hợp...</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- QUẢN LÝ CÁC ĐỢT ĐÃ GOM & XUẤT FILE EXCEL ĐỐI SOÁT                  -->
+    <!-- ================================================================== -->
+    <section class="panel batches-panel hidden" id="batchesPanel">
+      <div class="panel-header panel-header-batches">
+        <div class="panel-title-wrap">
+          <span class="step-tag step-tag-done">ĐÃ ĐỐI SOÁT</span>
+          <h2 class="panel-title" id="batchesPanelTitle">DANH SÁCH CÁC ĐỢT ĐÃ ĐỐI SOÁT (0 ĐỢT)</h2>
+        </div>
+        <div class="panel-header-actions">
+          <label class="checkbox-inline export-opt-label">
+            <input type="checkbox" id="chkExportUnallocatedOnly">
+            <span>Chỉ xuất dòng chưa đối soát</span>
+          </label>
+          <button type="button" id="btnExportExcelTop" class="btn btn-primary btn-sm">
+            Xuất File Excel Đối Soát (.xlsx)
+          </button>
+          <button type="button" id="btnClearAllBatches" class="btn btn-sm">
+            Hoàn tác tất cả các đợt
+          </button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div id="batchesSummaryBar" class="batches-summary-bar"></div>
+        <div class="table-scroll-wrap batches-table-wrap">
+          <table class="grid-table batches-table">
+            <thead>
+              <tr>
+                <th class="col-center" style="width: 100px;">Mã đợt</th>
+                <th class="col-center" style="width: 145px;">Thời điểm lưu</th>
+                <th class="col-center" style="width: 90px;">Số dòng</th>
+                <th class="col-num" style="width: 150px;">Số tiền cần gom</th>
+                <th class="col-num" style="width: 150px;">Tổng tiền thực gom</th>
+                <th class="col-num" style="width: 120px;">Chênh lệch</th>
+                <th>Ghi chú đợt đối soát (Số UNC / Ngân hàng / Khách hàng)</th>
+                <th class="col-center" style="width: 195px;">Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="batchesTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- BƯỚC 3A: KẾT QUẢ CÁC PHƯƠNG ÁN GOM TIỀN TÌM ĐƯỢC                   -->
+    <!-- ================================================================== -->
+    <section class="panel" id="resultsPanel">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="step-tag">BƯỚC 3</span>
+          <h2 class="panel-title">KẾT QUẢ CÁC PHƯƠNG ÁN GOM KHOẢN TIỀN</h2>
+        </div>
+        <div id="resultsFilterBar" class="results-filter-tabs hidden" role="tablist" aria-label="Lọc kết quả phương án">
+          <button type="button" class="tab-btn active" data-res-filter="all" id="tabResAll">Tất cả (0)</button>
+          <button type="button" class="tab-btn" data-res-filter="exact" id="tabResExact">Chỉ khớp chính xác = 0 (0)</button>
+          <button type="button" class="tab-btn" data-res-filter="near" id="tabResNear">Gần khớp ±500 (0)</button>
+        </div>
+      </div>
+
+      <div class="panel-body">
+        <div id="resultsSummaryBanner" class="results-summary-banner hidden"></div>
+        <div id="solutionsContainer" class="solutions-container">
+          <div class="empty-state-box">
+            <div class="empty-state-title">Chưa thực hiện tìm tổ hợp gom tiền</div>
+            <p class="empty-state-desc">
+              Vui lòng nạp file Excel ở <strong>Bước 1</strong> (hoặc bấm <strong>Nạp bảng kê mẫu để thử</strong>), nhập <strong>Số tiền cần gom</strong> ở <strong>Bước 2</strong> và bấm nút <strong>TÌM TỔ HỢP KHỚP SỐ TIỀN</strong>.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================================================================== -->
+    <!-- BƯỚC 3B: BẢNG DỮ LIỆU SỔ CHI TIẾT GỐC (TƯƠNG TÁC 2 CHIỀU)          -->
+    <!-- ================================================================== -->
+    <section class="panel" id="ledgerPanel">
+      <div class="panel-header">
+        <div class="panel-title-wrap">
+          <span class="step-tag step-tag-neutral">SỔ GỐC</span>
+          <h2 class="panel-title">BẢNG DỮ LIỆU SỔ CHI TIẾT (<span id="ledgerTotalBadge">0 dòng</span>)</h2>
+        </div>
+        <div class="panel-header-actions">
+          <button type="button" id="btnExportExcelLedger" class="btn btn-primary btn-sm" disabled>
+            Xuất File Excel Đối Soát (.xlsx)
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-body panel-body-flush">
+        <!-- Thanh công cụ lọc xem sổ chi tiết -->
+        <div class="ledger-toolbar">
+          <div class="ledger-tabs" id="ledgerFilterTabs" role="tablist" aria-label="Chế độ xem sổ chi tiết">
+            <button type="button" class="tab-btn active" data-ledger-view="filtered" id="tabLedgerFiltered">
+              Các dòng trong khoảng ngày đang lọc (0)
+            </button>
+            <button type="button" class="tab-btn" data-ledger-view="all" id="tabLedgerAll">
+              Toàn bộ file (0)
+            </button>
+            <button type="button" class="tab-btn" data-ledger-view="unreconciled" id="tabLedgerUnreconciled">
+              Chưa đối soát (0)
+            </button>
+            <button type="button" class="tab-btn" data-ledger-view="reconciled" id="tabLedgerReconciled">
+              Đã đối soát (0)
+            </button>
+            <button type="button" class="tab-btn hidden" data-ledger-view="inspect" id="tabLedgerInspect">
+              Đang đối chiếu (0)
+            </button>
+          </div>
+
+          <div class="ledger-toolbar-right">
+            <button type="button" id="btnClearPins" class="btn btn-xs hidden">Bỏ ghim bắt buộc (0)</button>
+            <button type="button" id="btnClearExcludes" class="btn btn-xs hidden">Bỏ loại trừ thủ công (0)</button>
+            <div class="pagesize-control">
+              <label for="ledgerPageSize">Hiển thị:</label>
+              <select id="ledgerPageSize" class="form-select form-select-xs">
+                <option value="200" selected>200 dòng / trang</option>
+                <option value="500">500 dòng / trang</option>
+                <option value="1000">1.000 dòng / trang</option>
+                <option value="999999">Tất cả dòng</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bảng lưới chuẩn Excel -->
+        <div class="ledger-table-wrap" id="ledgerTableWrap">
+          <table class="grid-table ledger-table">
+            <thead>
+              <tr>
+                <th class="col-check" title="Tích chọn để cộng nhẩm nhanh các dòng dưới thanh tổng cộng">
+                  <input type="checkbox" id="chkSelectAllVisible" aria-label="Chọn tất cả dòng đang hiển thị">
+                </th>
+                <th class="col-excel-row">Dòng Excel</th>
+                <th class="col-date">Ngày CT</th>
+                <th class="col-ref">Số CT / HĐ</th>
+                <th class="col-desc">Diễn giải</th>
+                <th class="col-num col-amount">Số tiền (VNĐ)</th>
+                <th class="col-status">Trạng thái</th>
+                <th class="col-actions">Ghim / Loại trừ khi tìm</th>
+              </tr>
+            </thead>
+            <tbody id="ledgerTableBody">
+              <tr>
+                <td colspan="8" class="empty-grid-cell">
+                  Chưa có dữ liệu sổ chi tiết. Hãy chọn file Excel hoặc nạp bảng kê mẫu ở Bước 1.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Phân trang bảng nếu sổ lớn -->
+        <div id="ledgerPaginationBar" class="ledger-pagination hidden">
+          <span id="ledgerPageInfo">Trang 1 / 1</span>
+          <div class="pagination-btns">
+            <button type="button" id="btnPrevPage" class="btn btn-xs">Trang trước</button>
+            <button type="button" id="btnNextPage" class="btn btn-xs">Trang sau</button>
+          </div>
+        </div>
+
+        <!-- Thanh tính tổng tức thời dưới chân bảng (Giống Status Bar góc dưới Excel) -->
+        <div class="excel-statusbar" id="ledgerStatusBar">
+          <div class="statusbar-left" id="statusBarLeft">
+            <span>Số dòng đang xem: <strong>0</strong></span>
+            <span class="statusbar-sep">|</span>
+            <span>Cộng vùng đang xem: <strong class="num-val">0</strong></span>
+          </div>
+          <div class="statusbar-right" id="statusBarRight">
+            <span id="selectionStatusText">Đang ghim/chọn: <strong>0 dòng</strong> | Tổng tiền: <strong class="num-val">0</strong> | Chênh lệch so với số cần tìm: <strong class="num-val">--</strong></span>
+            <button type="button" id="btnClearChecked" class="statusbar-clear-btn hidden">Bỏ tích chọn</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <div>Công cụ Đối soát và Gom khoản tiền Excel dành cho Nghiệp vụ Kế toán. Mọi dữ liệu sổ sách được tính toán cục bộ ngay trên trình duyệt, không tải lên máy chủ.</div>
+  </footer>
+
+  <script type="module" src="./src/ui/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "auto-finance",
+  "version": "1.0.0",
+  "description": "Công cụ đối soát và gom khoản tiền từ file Excel dành cho kế toán",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "generate:sample": "node scripts/generateSampleExcel.mjs"
+  },
+  "dependencies": {
+    "xlsx": "0.18.5"
+  }
+}
